@@ -1,0 +1,89 @@
+# ---------- Go ----------
+# Binaries for programs and libraries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, when used with `go test -coverprofile`
+*.out
+
+# Build artefacts
+/build
+/bin
+/obj
+/dist
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (if vendoring)
+vendor/
+
+# ---------- Fyne ----------
+# Fyne caches the compiled UI assets in a hidden folder
+.fyne-cache/
+.fyne-state/
+
+# Fyne generated assets (e.g. when using `fyne bundle`)
+*.fynebundle
+*.fynebundle.go
+
+# Fyne generated icons / resources (if you keep them in the repo)
+# (Uncomment if you generate temporary icons)
+# /icons/
+
+# ---------- IDE / Editor ----------
+# VS Code
+.vscode/
+*.code-workspace
+
+# GoLand / IntelliJ
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.#*
+
+# ---------- OS ----------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------- Misc ----------
+# Logs
+*.log
+
+# Local configuration files
+.env
+.env.*
+
+# History file you asked for
+history.json
+
