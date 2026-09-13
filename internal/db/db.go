@@ -3,10 +3,10 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
-	"fmt"				 
-	  
-//	"github.com/SurendraNaresh/mytodo/internal/db"
+
+	//	"github.com/SurendraNaresh/mytodo/internal/db"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -132,6 +132,48 @@ func migrate() error {
 
 	CREATE INDEX IF NOT EXISTS ix_tasks_due_date
 		ON tasks(due_date);
+
+	-- ============================================================
+	-- BLUEPRINT-DRIVEN OBJECTS
+	-- ============================================================
+	CREATE TABLE IF NOT EXISTS object_types (
+		type_id        INTEGER PRIMARY KEY,
+		type_key       TEXT NOT NULL UNIQUE,
+		parent_type_id INTEGER REFERENCES object_types(type_id),
+		version        INTEGER NOT NULL DEFAULT 1,
+		created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS objects (
+		obj_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		type_id      INTEGER NOT NULL REFERENCES object_types(type_id),
+		parent_obj_id INTEGER REFERENCES objects(obj_id) ON DELETE CASCADE,
+		owner_user_id INTEGER NOT NULL REFERENCES users(id),
+		data         TEXT NOT NULL DEFAULT '{}',
+		version      INTEGER NOT NULL DEFAULT 1,
+		created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS hierarchy_permission (
+		role TEXT NOT NULL,
+		parent_type_id INTEGER NOT NULL REFERENCES object_types(type_id),
+		child_type_id INTEGER NOT NULL REFERENCES object_types(type_id),
+		can_create INTEGER NOT NULL DEFAULT 0 CHECK (can_create IN (0, 1)),
+		PRIMARY KEY(role, parent_type_id, child_type_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS ix_objects_parent ON objects(parent_obj_id);
+	CREATE INDEX IF NOT EXISTS ix_objects_type ON objects(type_id);
+
+	CREATE TRIGGER IF NOT EXISTS trg_objects_version
+	AFTER UPDATE OF data, parent_obj_id, owner_user_id ON objects
+	WHEN NEW.version = OLD.version
+	BEGIN
+		UPDATE objects
+		SET version = OLD.version + 1, updated_at = CURRENT_TIMESTAMP
+		WHERE obj_id = OLD.obj_id;
+	END;
 	`
 
 	_, err := conn.Exec(schema)
@@ -157,6 +199,16 @@ func Open() error {
 	}
 
 	return nil
+}
+
+// OpenWithRestore restores backupPath before opening and migrating the database.
+func OpenWithRestore(backupPath string) error {
+	if backupPath != "" {
+		if err := RestoreDatabase(backupPath); err != nil {
+			return err
+		}
+	}
+	return Open()
 }
 
 func DB() *sql.DB {

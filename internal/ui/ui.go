@@ -6,6 +6,7 @@ import (
 	"fyne.io/fyne/v2/container"
 
 	"github.com/SurendraNaresh/mytodo/internal/auth"
+	"github.com/SurendraNaresh/mytodo/internal/db"
 )
 
 type AppState struct {
@@ -14,22 +15,27 @@ type AppState struct {
 
 	Session *auth.Session
 
-	Content *fyne.Container
-	Main    *fyne.Container
+	Content  *fyne.Container
+	Main     *fyne.Container
+	FirstRun bool
 }
 
 func NewApp() *AppState {
 	a := app.NewWithID("com.mytodo.desktop")
 	w := a.NewWindow("Todo Master")
 
-	//w.Resize(fyne.NewSize(900, 600))
-	w.Resize(fyne.NewSize(1050, 650))
+	if !fyne.CurrentDevice().IsMobile() {
+		w.Resize(fyne.NewSize(900, 600))
+	}
 	state := &AppState{
 		App:     a,
 		Window:  w,
 		Session: auth.NewSession(),
 		Content: container.NewStack(),
 		Main:    container.NewStack(),
+	}
+	if exists, err := db.DatabaseExists(); err == nil {
+		state.FirstRun = !exists
 	}
 
 	state.ShowLogin()

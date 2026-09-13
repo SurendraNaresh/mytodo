@@ -9,17 +9,21 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/SurendraNaresh/mytodo/internal/db"
 	"github.com/SurendraNaresh/mytodo/internal/model"
 )
+
 const loginFieldWidth float32 = 360
 const loginWidth float32 = 460
 
 func (s *AppState) ShowLogin() {
 	email := widget.NewEntry()
 	email.SetPlaceHolder("user@example.com")
-	email.Resize(fyne.NewSize(loginFieldWidth, email.MinSize().Height))
+	email.SetMinSize(fyne.NewSize(loginFieldWidth, email.MinSize().Height))
 	pass := widget.NewPasswordEntry()
-	email.Resize(fyne.NewSize(loginFieldWidth, pass.MinSize().Height))
+	pass.SetMinSize(fyne.NewSize(loginFieldWidth, pass.MinSize().Height))
+	limitEntry(email, 50)
+	limitEntry(pass, 50)
 	status := widget.NewLabel("")
 	status.Alignment = fyne.TextAlignCenter
 
@@ -40,8 +44,8 @@ func (s *AppState) ShowLogin() {
 	login.Importance = widget.HighImportance
 
 	form := widget.NewForm(
-		widget.NewFormItem("Email", 	email),
-		widget.NewFormItem("Password", 	pass),
+		widget.NewFormItem("Email", email),
+		widget.NewFormItem("Password", pass),
 	)
 
 	users, _ := model.GetUsers()
@@ -78,13 +82,72 @@ func (s *AppState) ShowLogin() {
 		container.NewVBox(items...),
 	)
 
-	// Give the card a sensible fixed size.
-	card.Resize(fyne.NewSize(640, 540))
+	s.setContent(container.NewPadded(container.NewCenter(card)))
+	if s.FirstRun {
+		s.FirstRun = false
+		s.showRestoreDatabase(false)
+	}
+}
 
-	// Center the complete card inside the available window.
-	content := container.NewCenter(card)
-	
-	s.setContent(content)
+func limitEntry(entry *widget.Entry, max int) {
+	entry.OnChanged = func(value string) {
+		runes := []rune(value)
+		if len(runes) > max {
+			entry.SetText(string(runes[:max]))
+		}
+	}
+}
+
+func (s *AppState) showRestoreDatabase(required bool) {
+	message := "A new database will be created in the default application folder if you continue without selecting a backup."
+	if required {
+		message = "Select a SQLite database backup to replace the current database."
+	}
+
+	choose := widget.NewButton("Select database backup", func() {
+		picker := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+			if err != nil {
+				dialog.ShowError(err, s.Window)
+				return
+			}
+			if reader == nil {
+				return
+			}
+			path := reader.URI().Path()
+			_ = reader.Close()
+
+			if err := db.Close(); err != nil {
+				dialog.ShowError(err, s.Window)
+				return
+			}
+			if err := db.RestoreDatabase(path); err != nil {
+				dialog.ShowError(err, s.Window)
+				_ = db.Open()
+				return
+			}
+			if err := db.Open(); err != nil {
+				dialog.ShowError(err, s.Window)
+				return
+			}
+			dialog.ShowInformation("Database restored", "The selected database is now active.", s.Window)
+			s.ShowLogin()
+		}, s.Window)
+		picker.SetTitleText("Restore database")
+		picker.SetConfirmText("Restore")
+		picker.Show()
+	})
+
+	items := []fyne.CanvasObject{
+		widget.NewLabelWithStyle("Restore database", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(message),
+		choose,
+	}
+	if !required {
+		items = append(items, widget.NewButton("Continue with new database", func() {
+			dialog.DismissAll()
+		}))
+	}
+	dialog.ShowCustomWithoutButtons("Database setup", container.NewVBox(items...), s.Window)
 }
 
 func (s *AppState) showBootstrapAdmin() {
@@ -133,6 +196,5 @@ func (s *AppState) showBootstrapAdmin() {
 		s.Window,
 	)
 
-	form.Resize(fyne.NewSize(450, 300))
 	form.Show()
 }

@@ -5,6 +5,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -79,12 +80,30 @@ func (s *AppState) ShowDashboard() {
 		logout,
 	)
 
-	root := container.NewBorder(
+	menu := widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
+		if sidebar.Visible() {
+			sidebar.Hide()
+		} else {
+			sidebar.Show()
+		}
+	})
+	menu.Importance = widget.LowImportance
+
+	body := container.NewBorder(
 		nil,
 		nil,
 		sidebar,
 		nil,
 		s.Main,
+	)
+	sidebar.Hide()
+
+	root := container.NewBorder(
+		container.NewHBox(menu),
+		nil,
+		nil,
+		nil,
+		body,
 	)
 
 	s.setContent(root)
