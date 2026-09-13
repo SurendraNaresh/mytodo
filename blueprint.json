@@ -1,0 +1,63 @@
+{
+  "modules": [
+    {
+      "name": "voting",
+      "package": "voting",
+      "master": {
+        "name": "voting_event",
+        "label": "Voting event",
+        "fields": [
+          { "name": "title", "label": "Title", "type": "text", "required": true },
+          { "name": "description", "label": "Description", "type": "text" },
+          { "name": "opens_at", "label": "Opens at", "type": "datetime", "required": true },
+          { "name": "closes_at", "label": "Closes at", "type": "datetime", "required": true }
+        ]
+      },
+      "detail": {
+        "name": "vote",
+        "label": "Vote",
+        "fields": [
+          { "name": "voter_user_id", "label": "Voter", "type": "int64", "required": true },
+          { "name": "choice", "label": "Choice", "type": "text", "required": true }
+        ],
+        "unique": ["voter_user_id"]
+      }
+    }
+  ],
+  "types": [
+    {
+      "type_key": "manager",
+      "type_id": 101,
+      "parent_type_id": null,
+      "header": {
+        "ndc_1": "Name",
+        "ndc_2": "Email",
+        "ndc_3": "Department"
+      },
+      "logic_rule": {
+        "validation": "fnValidateManager"
+      },
+      "ui": {
+        "list_cols": ["ndc_1", "ndc_2"],
+        "form_order": ["ndc_1", "ndc_2", "ndc_3"]
+      }
+    },
+    {
+      "type_key": "staff",
+      "type_id": 102,
+      "parent_type_id": 101,
+      "header": {
+        "ndc_1": "Name",
+        "ndc_2": "Email",
+        "ndc_3": "Designation"
+      },
+      "logic_rule": {
+        "validation": "fnValidateStaff"
+      },
+      "ui": {
+        "list_cols": ["ndc_1", "ndc_2"],
+        "form_order": ["ndc_1", "ndc_2", "ndc_3"]
+      }
+    }
+  ]
+}
