@@ -40,5 +40,10 @@ func NewVotingEventView() fyne.CanvasObject {
 			container.NewVBox(widget.NewLabel("Time"), closesAtTime),
 		)),
 	)
-	return container.NewVScroll(form)
+	actions := container.NewHBox(
+		widget.NewButton("Save", nil),
+		widget.NewButton("Edit", nil),
+		widget.NewButton("Add-New", nil),
+	)
+	return container.NewBorder(actions, nil, nil, nil, container.NewVScroll(form))
 }
