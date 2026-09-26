@@ -150,7 +150,8 @@ func TestRenderIncludesMasterAndDetailCRUD(t *testing.T) {
 		`widget.NewButton("Save", nil)`,
 		`widget.NewButton("Edit", nil)`,
 		`widget.NewButton("Add-New", nil)`,
-		"container.NewBorder(actions, nil, nil, nil, container.NewVScroll(form))",
+		`container.NewBorder(actions, nil, nil, nil, container.NewVScroll(form))`,
+		"container.NewVScroll(form)",
 	} {
 		if !strings.Contains(view, field) {
 			t.Errorf("generated view is missing %q", field)
