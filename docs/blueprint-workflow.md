@@ -34,13 +34,15 @@ Use these rules:
 - A field renderer owns its minimum size; the module definition does not force a global width.
 - Theme is an application concern. A module can request semantic emphasis, but should not inject arbitrary colors or fonts.
 
+The dashboard keeps the existing application under a `mytodo-` tab. The generator writes `generated/modules.go`, which registers one tab per blueprint module using its detail table name as the tab title and its generated master view as content. Adding a module therefore updates the tab registry on regeneration without a hand-maintained dashboard import.
+
 ## Security model
 
 Values must always be SQL parameters (`?`). The generated controller does this for all field values.
 
 Identifiers are different: table and column names cannot be SQL parameters. They are accepted only after blueprint validation, converted into generated source, reviewed, and compiled. Never accept table names, column names, or SQL fragments from a user at runtime.
 
-The generator currently rejects names unless they match `^[a-z][a-z0-9_]*$` and allows only the known field types `text`, `int64`, `bool`, and `datetime`. Keep this allow-list strict.
+The generator rejects unknown JSON keys and names unless they match `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`; underscores must separate non-empty segments. It allows only the known field types `text`, `int64`, `bool`, and `datetime`. Keep this allow-list strict.
 
 Authorization must be checked in the controller/service boundary, not only in the view:
 
@@ -62,20 +64,29 @@ The checked-in `blueprint.json` contains this example:
 - Parent key: `voting_event_id`
 - Unique rule: one vote per `voter_user_id` for each `voting_event`
 
-Run the generator from the repository root:
+Run the generator from the repository root. An administrator can also select
+**Generate UI** in the application sidebar; this runs the same generator after
+confirmation. It writes Go/SQL source only, so the running application does not
+hot-load the generated tabs. The app must be rebuilt and restarted afterward.
 
 ### PowerShell
 
 ```powershell
 go run ./tools/blueprintgen -blueprint .\blueprint.json -out .\generated
+git diff -- .\generated
 go test ./...
+go build -o .\mytodo.exe .
+.\mytodo.exe
 ```
 
 ### Bash
 
 ```bash
 go run ./tools/blueprintgen -blueprint ./blueprint.json -out ./generated
+git diff -- ./generated
 go test ./...
+go build -o ./mytodo .
+./mytodo
 ```
 
 Inspect the result before applying it:
@@ -88,6 +99,16 @@ generated/voting/voting.sql
 ```
 
 Apply `voting.sql` through a versioned migration. Do not make the application run arbitrary generated DDL on startup. Add domain rules, authorization, and the real Fyne master-detail screen in hand-written companion files beside the generated files.
+
+### `user_management` module
+
+The checked-in module uses lowercase field identifiers and references only
+defined fields. Its master `unique` list is emitted as one composite
+constraint, so `(username, email)` must be unique as a pair; it does not make
+each column independently unique. The detail has no unique constraint because
+no phone-number uniqueness rule was specified. Generated generic CRUD does not
+hash credentials, so password storage must remain in the existing auth-aware
+user model rather than being added as a plain generated field.
 
 ## Blueprint field rules
 
@@ -104,12 +125,17 @@ Each module has `name`, `package`, `master`, and `detail`. Each entity has a tab
 
 Supported field types are intentionally small. Add a type only when the generator defines its SQL type, Go type, input widget, validation, and migration behavior together.
 
+The optional top-level `types` array is also decoded and retained. Each entry supports `type_key`, `type_id`, nullable `parent_type_id`, a string-valued `header` map, `logic_rule.validation`, and `ui.list_cols` / `ui.form_order`. Unknown struct fields are rejected so misspelled configuration is not silently discarded; keys inside `header` are intentionally dynamic.
+
+Generated controllers provide create, get, list, update, and delete functions for both the master and detail entities. Detail lists are scoped by the master ID. These are data-access primitives, not a substitute for authorization, payload validation, or optimistic concurrency checks in the service boundary. The generator renders and formats every module before staging and replacing any output files.
+
 ## Testing checklist
 
 For every generated module:
 
 - malformed JSON is rejected;
-- invalid identifiers and unsupported types are rejected;
+- unknown keys, invalid identifiers, cross-module ID collisions, and unsupported types are rejected;
+- a generation/rendering failure leaves existing generated files unchanged;
 - generated SQL is reviewed and applied to a disposable database;
 - required fields and unique constraints are tested;
 - parent access is tested for an authorized and unauthorized user;

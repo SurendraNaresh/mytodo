@@ -19,9 +19,7 @@ const loginWidth float32 = 460
 func (s *AppState) ShowLogin() {
 	email := widget.NewEntry()
 	email.SetPlaceHolder("user@example.com")
-	email.SetMinSize(fyne.NewSize(loginFieldWidth, email.MinSize().Height))
 	pass := widget.NewPasswordEntry()
-	pass.SetMinSize(fyne.NewSize(loginFieldWidth, pass.MinSize().Height))
 	limitEntry(email, 50)
 	limitEntry(pass, 50)
 	status := widget.NewLabel("")
@@ -44,8 +42,8 @@ func (s *AppState) ShowLogin() {
 	login.Importance = widget.HighImportance
 
 	form := widget.NewForm(
-		widget.NewFormItem("Email", email),
-		widget.NewFormItem("Password", pass),
+		widget.NewFormItem("Email", container.NewGridWrap(fyne.NewSize(loginFieldWidth, email.MinSize().Height), email)),
+		widget.NewFormItem("Password", container.NewGridWrap(fyne.NewSize(loginFieldWidth, pass.MinSize().Height), pass)),
 	)
 
 	users, _ := model.GetUsers()
@@ -143,11 +141,14 @@ func (s *AppState) showRestoreDatabase(required bool) {
 		choose,
 	}
 	if !required {
-		items = append(items, widget.NewButton("Continue with new database", func() {
-			dialog.DismissAll()
-		}))
+		items = append(items, widget.NewButton("Continue with new database", nil))
 	}
-	dialog.ShowCustomWithoutButtons("Database setup", container.NewVBox(items...), s.Window)
+	setupDialog := dialog.NewCustomWithoutButtons("Database setup", container.NewVBox(items...), s.Window)
+	setupDialog.Show()
+	if !required {
+		continueButton := items[len(items)-1].(*widget.Button)
+		continueButton.OnTapped = setupDialog.Dismiss
+	}
 }
 
 func (s *AppState) showBootstrapAdmin() {

@@ -9,8 +9,8 @@
         "fields": [
           { "name": "title", "label": "Title", "type": "text", "required": true },
           { "name": "description", "label": "Description", "type": "text" },
-          { "name": "opens_at", "label": "Opens at", "type": "datetime", "required": true },
-          { "name": "closes_at", "label": "Closes at", "type": "datetime", "required": true }
+          { "name": "opens_at", "label": "Opens", "type": "datetime", "required": true },
+          { "name": "closes_at", "label": "Closes", "type": "datetime", "required": true }
         ]
       },
       "detail": {
@@ -21,6 +21,28 @@
           { "name": "choice", "label": "Choice", "type": "text", "required": true }
         ],
         "unique": ["voter_user_id"]
+      }
+    }
+    ,
+    {
+      "name": "user_management",
+      "package": "user_management",
+      "master": {
+        "name": "user",
+        "label": "User",
+        "fields": [
+          { "name": "username", "label": "Username", "type": "text", "required": true },
+          { "name": "email", "label": "Email", "type": "text", "required": true }
+        ],
+        "unique": ["username", "email"]
+      },
+      "detail": {
+        "name": "userdetails",
+        "label": "User-Details",
+        "fields": [
+          { "name": "phone1", "label": "Phone1", "type": "int64", "required": true },
+          { "name": "phone2", "label": "WhatsApp Phone", "type": "text", "required": false }
+        ]
       }
     }
   ],

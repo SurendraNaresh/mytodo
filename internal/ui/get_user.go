@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -30,11 +32,12 @@ func (s *AppState) ShowUsers() {
 		dialog.ShowError(err, s.Window)
 		return
 	}
+	allUsers := users
 
 	var selected *model.User
 
 	name := widget.NewEntry()
-	dob := widget.NewEntry()
+	dob := widget.NewDateEntry()
 	email := widget.NewEntry()
 	password := widget.NewPasswordEntry()
 
@@ -84,7 +87,7 @@ func (s *AppState) ShowUsers() {
 		selected = nil
 
 		name.SetText("")
-		dob.SetText("")
+		dob.SetDate(nil)
 		email.SetText("")
 		password.SetText("")
 
@@ -100,7 +103,11 @@ func (s *AppState) ShowUsers() {
 		selected = &copyUser
 
 		name.SetText(u.Name)
-		dob.SetText(u.DOB)
+		if date, ok := parseStoredDate(u.DOB); ok {
+			dob.SetDate(&date)
+		} else {
+			dob.SetDate(nil)
+		}
 		email.SetText(u.Email)
 		password.SetText("")
 		roleSelect.SetSelected(string(u.Role))
@@ -142,9 +149,10 @@ func (s *AppState) ShowUsers() {
 
 			label.SetText(
 				fmt.Sprintf(
-					"%s\n%s",
+					"%s\n%s | DOB: %s",
 					u.Name,
 					u.Email,
+					u.DOB,
 				),
 			)
 
@@ -159,6 +167,41 @@ func (s *AppState) ShowUsers() {
 
 		fillForm(users[id])
 	}
+
+	dobFrom := widget.NewDateEntry()
+	dobTo := widget.NewDateEntry()
+	filterStatus := widget.NewLabel("")
+	applyDateFilter := func() {
+		if !dateRangeValid(dobFrom.Date, dobTo.Date) {
+			users = nil
+			filterStatus.SetText("Start date must be on or before end date")
+			list.Refresh()
+			return
+		}
+		users = make([]model.User, 0, len(allUsers))
+		for _, user := range allUsers {
+			if matchesDateRange(user.DOB, dobFrom.Date, dobTo.Date) {
+				users = append(users, user)
+			}
+		}
+		filterStatus.SetText(fmt.Sprintf("%d users", len(users)))
+		list.Refresh()
+	}
+	dobFrom.OnChanged = func(*time.Time) { applyDateFilter() }
+	dobTo.OnChanged = func(*time.Time) { applyDateFilter() }
+	clearDateFilter := widget.NewButton("Clear dates", func() {
+		dobFrom.SetDate(nil)
+		dobTo.SetDate(nil)
+		applyDateFilter()
+	})
+	userFilters := container.NewVBox(
+		container.NewGridWithColumns(2,
+			container.NewVBox(widget.NewLabel("DOB from"), dobFrom),
+			container.NewVBox(widget.NewLabel("DOB to"), dobTo),
+		),
+		container.NewHBox(clearDateFilter, filterStatus),
+	)
+	applyDateFilter()
 
 	form := widget.NewForm(
 		widget.NewFormItem("Name", name),
@@ -185,6 +228,14 @@ func (s *AppState) ShowUsers() {
 	saveButton := widget.NewButton(
 		"Save",
 		func() {
+			dobValue := ""
+			if dob.Date != nil {
+				dobValue = dob.Date.Format("2006-01-02")
+			} else if strings.TrimSpace(dob.Text) != "" {
+				status.SetText("Select a valid date of birth")
+				return
+			}
+
 			var parentID sql.NullInt64
 
 			if id := parentMap[parentSelect.Selected]; id != 0 {
@@ -204,7 +255,7 @@ func (s *AppState) ShowUsers() {
 
 				_, err := model.CreateUser(
 					name.Text,
-					dob.Text,
+					dobValue,
 					email.Text,
 					model.Role(roleSelect.Selected),
 					password.Text,
@@ -221,7 +272,7 @@ func (s *AppState) ShowUsers() {
 			}
 
 			selected.Name = name.Text
-			selected.DOB = dob.Text
+			selected.DOB = dobValue
 			selected.Email = email.Text
 			selected.Role = model.Role(
 				roleSelect.Selected,
@@ -328,7 +379,7 @@ func (s *AppState) ShowUsers() {
 
 	split := container.NewHSplit(
 		container.NewBorder(
-			widget.NewLabel("Users"),
+			userFilters,
 			nil,
 			nil,
 			nil,

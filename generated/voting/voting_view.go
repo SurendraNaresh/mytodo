@@ -9,5 +9,41 @@ import (
 // NewVotingEventView is a deliberately small generated starting point.
 // Add domain-specific layout and validation in a hand-written companion file.
 func NewVotingEventView() fyne.CanvasObject {
-	return container.NewBorder(nil, nil, nil, nil, widget.NewLabel("Voting event"))
+
+	title := widget.NewEntry()
+
+	description := widget.NewEntry()
+
+	opensAtDate := widget.NewDateEntry()
+	opensAtDate.SetPlaceHolder("YYYY-MM-DD")
+	opensAtTime := widget.NewEntry()
+	opensAtTime.SetPlaceHolder("HH:MM")
+
+	closesAtDate := widget.NewDateEntry()
+	closesAtDate.SetPlaceHolder("YYYY-MM-DD")
+	closesAtTime := widget.NewEntry()
+	closesAtTime.SetPlaceHolder("HH:MM")
+
+	form := widget.NewForm(
+
+		widget.NewFormItem("Title", title),
+
+		widget.NewFormItem("Description", description),
+
+		widget.NewFormItem("Opens", container.NewGridWithColumns(2,
+			container.NewVBox(widget.NewLabel("Date"), opensAtDate),
+			container.NewVBox(widget.NewLabel("Time"), opensAtTime),
+		)),
+
+		widget.NewFormItem("Closes", container.NewGridWithColumns(2,
+			container.NewVBox(widget.NewLabel("Date"), closesAtDate),
+			container.NewVBox(widget.NewLabel("Time"), closesAtTime),
+		)),
+	)
+	actions := container.NewHBox(
+		widget.NewButton("Save", nil),
+		widget.NewButton("Edit", nil),
+		widget.NewButton("Add-New", nil),
+	)
+	return container.NewBorder(actions, nil, nil, nil, container.NewVScroll(form))
 }

@@ -3,7 +3,7 @@ package voting
 type VotingEvent struct {
 	ID          int64
 	Title       string
-	Description string
+	Description *string
 	OpensAt     string
 	ClosesAt    string
 }
