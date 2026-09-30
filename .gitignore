@@ -17,6 +17,8 @@
 /bin
 /obj
 /dist
+/wasm
+*.wasm
 
 # Go workspace file
 go.work
