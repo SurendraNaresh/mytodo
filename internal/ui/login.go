@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 	"github.com/SurendraNaresh/mytodo/internal/model"
 )
@@ -46,11 +47,20 @@ func (s *AppState) ShowLogin() {
 		widget.NewFormItem("Password", container.NewGridWrap(fyne.NewSize(loginFieldWidth, pass.MinSize().Height), pass)),
 	)
 
-	users, _ := model.GetUsers()
+	needsSetup := false
+	if api.Enabled() {
+		client, err := api.Default()
+		if err == nil {
+			needsSetup, _ = client.NeedsSetup()
+		}
+	} else {
+		users, _ := model.GetUsers()
+		needsSetup = len(users) == 0
+	}
 
 	var bootstrap *widget.Button
 
-	if len(users) == 0 {
+	if needsSetup {
 		bootstrap = widget.NewButton(
 			"Create first Admin",
 			func() {

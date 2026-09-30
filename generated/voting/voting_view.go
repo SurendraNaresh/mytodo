@@ -14,6 +14,8 @@ func NewVotingEventView() fyne.CanvasObject {
 
 	description := widget.NewEntry()
 
+	eventType := widget.NewEntry()
+
 	opensAtDate := widget.NewDateEntry()
 	opensAtDate.SetPlaceHolder("YYYY-MM-DD")
 	opensAtTime := widget.NewEntry()
@@ -29,6 +31,8 @@ func NewVotingEventView() fyne.CanvasObject {
 		widget.NewFormItem("Title", title),
 
 		widget.NewFormItem("Description", description),
+
+		widget.NewFormItem("Event type", eventType),
 
 		widget.NewFormItem("Opens", container.NewGridWithColumns(2,
 			container.NewVBox(widget.NewLabel("Date"), opensAtDate),

@@ -42,7 +42,7 @@ func eventOverlapsDateRange(opensAt, closesAt string, from, to *time.Time) bool 
 
 func parseStoredDate(value string) (time.Time, bool) {
 	value = strings.TrimSpace(value)
-	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04", "2006-01-02"} {
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04", "2006-01-02", "02/01/2006", "2/1/2006"} {
 		parsed, err := time.Parse(layout, value)
 		if err == nil {
 			return parsed, true

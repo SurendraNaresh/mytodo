@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 
@@ -11,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/SurendraNaresh/mytodo/generated"
+	"github.com/SurendraNaresh/mytodo/internal/api"
 )
 
 func (s *AppState) ShowDashboard() {
@@ -24,7 +26,7 @@ func (s *AppState) ShowDashboard() {
 	user := s.Session.User
 
 	title := widget.NewLabelWithStyle(
-		"Todo Master",
+		"APP Todo Master",
 		fyne.TextAlignLeading,
 		fyne.TextStyle{Bold: true},
 	)
@@ -79,6 +81,90 @@ func (s *AppState) ShowDashboard() {
 		admin.Disable()
 		generateUI.Disable()
 	}
+	if api.Enabled() {
+		generateUI.Disable()
+	}
+	importDatabase := widget.NewButton("Import SQLite database", func() {
+		if !s.Session.IsAdmin() || !api.Enabled() {
+			return
+		}
+		dialog.ShowConfirm("Import SQLite database", "Replace the shared server database with the selected file? All current server data will be replaced.", func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			picker := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+				if err != nil {
+					dialog.ShowError(err, s.Window)
+					return
+				}
+				if reader == nil {
+					return
+				}
+				defer reader.Close()
+				content, err := io.ReadAll(io.LimitReader(reader, 256<<20+1))
+				if err != nil {
+					dialog.ShowError(err, s.Window)
+					return
+				}
+				if len(content) > 256<<20 {
+					dialog.ShowError(fmt.Errorf("database file exceeds 256 MiB"), s.Window)
+					return
+				}
+				client, err := api.Default()
+				if err == nil {
+					err = client.ImportDatabase(reader.URI().Name(), content)
+				}
+				if err != nil {
+					dialog.ShowError(err, s.Window)
+					return
+				}
+				s.Session.Logout()
+				dialog.ShowInformation("Database imported", "The shared database was replaced. Sign in again to continue.", s.Window)
+				s.ShowLogin()
+			}, s.Window)
+			picker.SetTitleText("Choose SQLite database")
+			picker.SetConfirmText("Import")
+			picker.Show()
+		}, s.Window)
+	})
+	if !s.Session.IsAdmin() || !api.Enabled() {
+		importDatabase.Hide()
+	}
+	exportDatabase := widget.NewButton("Export SQLite database", func() {
+		if !s.Session.IsAdmin() || !api.Enabled() {
+			return
+		}
+		picker := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+			if err != nil {
+				dialog.ShowError(err, s.Window)
+				return
+			}
+			if writer == nil {
+				return
+			}
+			client, err := api.Default()
+			if err == nil {
+				err = client.BackupDatabase(writer)
+			}
+			closeErr := writer.Close()
+			if err != nil {
+				dialog.ShowError(err, s.Window)
+				return
+			}
+			if closeErr != nil {
+				dialog.ShowError(closeErr, s.Window)
+				return
+			}
+			dialog.ShowInformation("Database backup", "The server database backup was saved.", s.Window)
+		}, s.Window)
+		picker.SetFileName("mytodo.db")
+		picker.SetTitleText("Export SQLite backup")
+		picker.SetConfirmText("Save")
+		picker.Show()
+	})
+	if !s.Session.IsAdmin() || !api.Enabled() {
+		exportDatabase.Hide()
+	}
 
 	profile := widget.NewButton(
 		"User / Profile",
@@ -95,7 +181,7 @@ func (s *AppState) ShowDashboard() {
 	)
 
 	voting := widget.NewButton(
-		"Voting events",
+		"Events",
 		func() {
 			s.ShowVoting()
 		},
@@ -125,6 +211,8 @@ func (s *AppState) ShowDashboard() {
 
 		admin,
 		generateUI,
+		importDatabase,
+		exportDatabase,
 		profile,
 		todo,
 		voting,
@@ -164,6 +252,10 @@ func (s *AppState) ShowDashboard() {
 
 	tabs := container.NewAppTabs(container.NewTabItem("mytodo-", root))
 	for _, tab := range generated.ModuleTabs() {
+		if tab.Text == "Event" {
+			tabs.Append(container.NewTabItem("Event", s.votingView()))
+			continue
+		}
 		tabs.Append(tab)
 	}
 	s.setContent(tabs)

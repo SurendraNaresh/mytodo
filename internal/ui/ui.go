@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/auth"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 )
@@ -55,8 +56,10 @@ func NewApp() *AppState {
 		Content: container.NewStack(),
 		Main:    container.NewStack(),
 	}
-	if exists, err := db.DatabaseExists(); err == nil {
-		state.FirstRun = !exists
+	if !api.Enabled() {
+		if exists, err := db.DatabaseExists(); err == nil {
+			state.FirstRun = !exists
+		}
 	}
 
 	state.ShowLogin()

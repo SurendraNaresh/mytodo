@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 )
 
@@ -45,6 +46,17 @@ func CreateProject(
 	if name == "" {
 		return nil, errors.New("project name required")
 	}
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		project, err := client.SaveProject(api.Project{OwnerID: ownerID, Name: name, Description: description})
+		if err != nil {
+			return nil, err
+		}
+		return projectFromAPI(project), nil
+	}
 
 	res, err := db.DB().Exec(`
 		INSERT INTO projects
@@ -69,6 +81,17 @@ func CreateProject(
 }
 
 func GetProject(id int64) (*Project, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		project, err := client.Project(id)
+		if err != nil {
+			return nil, err
+		}
+		return projectFromAPI(project), nil
+	}
 	var p Project
 
 	err := db.DB().QueryRow(`
@@ -94,6 +117,21 @@ func GetProject(id int64) (*Project, error) {
 }
 
 func ProjectsForUser(userID int64) ([]Project, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		projects, err := client.Projects()
+		if err != nil {
+			return nil, err
+		}
+		result := make([]Project, 0, len(projects))
+		for _, project := range projects {
+			result = append(result, *projectFromAPI(project))
+		}
+		return result, nil
+	}
 	rows, err := db.DB().Query(`
 		SELECT
 		    id,
@@ -140,6 +178,14 @@ func UpdateProject(p *Project) error {
 	if p.Name == "" {
 		return errors.New("project name required")
 	}
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		_, err = client.SaveProject(api.Project{ID: p.ID, OwnerID: p.OwnerID, Name: p.Name, Description: p.Description})
+		return err
+	}
 
 	_, err := db.DB().Exec(`
 		UPDATE projects
@@ -158,6 +204,13 @@ func UpdateProject(p *Project) error {
 }
 
 func DeleteProject(id, ownerID int64) error {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		return client.DeleteProject(id)
+	}
 	// Child tasks disappear automatically because of ON DELETE CASCADE.
 	_, err := db.DB().Exec(`
 		DELETE FROM projects
@@ -195,6 +248,17 @@ func CreateTask(
 	if name == "" {
 		return nil, errors.New("task name required")
 	}
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		task, err := client.SaveTask(api.Task{ParentID: parentID, UserID: userID, Name: name, DueDate: dueDate})
+		if err != nil {
+			return nil, err
+		}
+		return taskFromAPI(task), nil
+	}
 
 	res, err := db.DB().Exec(`
 		INSERT INTO tasks
@@ -220,6 +284,17 @@ func CreateTask(
 }
 
 func GetTask(id int64) (*Task, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		task, err := client.Task(id)
+		if err != nil {
+			return nil, err
+		}
+		return taskFromAPI(task), nil
+	}
 	var t Task
 	var done int
 
@@ -252,6 +327,21 @@ func GetTask(id int64) (*Task, error) {
 }
 
 func TasksForParent(parentID, userID int64) ([]Task, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		tasks, err := client.Tasks(parentID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]Task, 0, len(tasks))
+		for _, task := range tasks {
+			result = append(result, *taskFromAPI(task))
+		}
+		return result, nil
+	}
 	rows, err := db.DB().Query(`
 		SELECT
 		    id,
@@ -311,6 +401,14 @@ func UpdateTask(t *Task) error {
 	if t.Name == "" {
 		return errors.New("task name required")
 	}
+	if api.Enabled() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		_, err = client.SaveTask(api.Task{ID: t.ID, ParentID: t.ParentID, UserID: t.UserID, Name: t.Name, DueDate: t.DueDate, Done: t.Done})
+		return err
+	}
 
 	done := 0
 	if t.Done {
@@ -338,6 +436,13 @@ func UpdateTask(t *Task) error {
 }
 
 func DeleteTask(id, userID int64) error {
+	if api.Enabled() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		return client.DeleteTask(id)
+	}
 	_, err := db.DB().Exec(`
 		DELETE FROM tasks
 		 WHERE id = ?
@@ -348,4 +453,12 @@ func DeleteTask(id, userID int64) error {
 	)
 
 	return err
+}
+
+func projectFromAPI(project api.Project) *Project {
+	return &Project{ID: project.ID, OwnerID: project.OwnerID, Name: project.Name, Description: project.Description}
+}
+
+func taskFromAPI(task api.Task) *Task {
+	return &Task{ID: task.ID, ParentID: task.ParentID, UserID: task.UserID, Name: task.Name, DueDate: task.DueDate, Done: task.Done}
 }

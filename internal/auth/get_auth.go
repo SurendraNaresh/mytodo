@@ -3,11 +3,13 @@ package auth
 import (
 	"errors"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/model"
 )
 
 type Session struct {
-	User *model.User
+	User  *model.User
+	Token string
 }
 
 func NewSession() *Session {
@@ -18,6 +20,19 @@ func (s *Session) Login(
 	email string,
 	password string,
 ) error {
+	if api.Enabled() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		user, token, err := client.Login(email, password)
+		if err != nil {
+			return err
+		}
+		s.User = model.UserFromAPI(user)
+		s.Token = token
+		return nil
+	}
 
 	u, err := model.GetUserByEmail(email)
 	if err != nil {
@@ -37,7 +52,13 @@ func (s *Session) Login(
 }
 
 func (s *Session) Logout() {
+	if api.Enabled() && s.Token != "" {
+		if client, err := api.Default(); err == nil {
+			_ = client.Logout()
+		}
+	}
 	s.User = nil
+	s.Token = ""
 }
 
 func (s *Session) IsAuthenticated() bool {
@@ -47,6 +68,21 @@ func (s *Session) IsAuthenticated() bool {
 func (s *Session) Validate() error {
 	if !s.IsAuthenticated() {
 		return errors.New("no active session")
+	}
+	if api.Enabled() {
+		client, err := api.Default()
+		if err != nil {
+			s.Logout()
+			return errors.New("session no longer valid")
+		}
+		client.SetToken(s.Token)
+		user, err := client.Me()
+		if err != nil {
+			s.Logout()
+			return errors.New("session no longer valid")
+		}
+		s.User = model.UserFromAPI(user)
+		return nil
 	}
 
 	// Re-read user so deleted/changed users do not retain stale sessions.

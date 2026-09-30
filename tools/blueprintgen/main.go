@@ -15,8 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 )
 
 type Blueprint struct {
@@ -45,22 +47,32 @@ type TypeUI struct {
 type Module struct {
 	Name    string `json:"name"`
 	Package string `json:"package"`
+	Label   string `json:"label"`
 	Master  Entity `json:"master"`
 	Detail  Entity `json:"detail"`
 }
 
 type Entity struct {
-	Name   string   `json:"name"`
-	Label  string   `json:"label"`
-	Fields []Field  `json:"fields"`
-	Unique []string `json:"unique"`
+	Name            string           `json:"name"`
+	Label           string           `json:"label"`
+	Fields          []Field          `json:"fields"`
+	Unique          []string         `json:"unique"`
+	ValidationRules []ValidationRule `json:"validation_rules"`
 }
 
 type Field struct {
-	Name     string `json:"name"`
-	Label    string `json:"label"`
-	Type     string `json:"type"`
-	Required bool   `json:"required"`
+	Name     string   `json:"name"`
+	Label    string   `json:"label"`
+	Type     string   `json:"type"`
+	Required bool     `json:"required"`
+	Options  []string `json:"options"`
+	RangeMin string   `json:"range_min"`
+	RangeMax string   `json:"range_max"`
+}
+
+type ValidationRule struct {
+	When     map[string]string `json:"when"`
+	Required []string          `json:"required"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
@@ -131,10 +143,59 @@ func validateEntity(entity Entity) error {
 			return fmt.Errorf("invalid or duplicate field %q", field.Name)
 		}
 		seen[field.Name] = true
+		if len(field.Options) > 0 && field.Type != "text" {
+			return fmt.Errorf("options are only supported for text field %q", field.Name)
+		}
+		optionValues := map[string]bool{}
+		for _, option := range field.Options {
+			if strings.TrimSpace(option) == "" || optionValues[option] {
+				return fmt.Errorf("invalid or duplicate option for field %q", field.Name)
+			}
+			optionValues[option] = true
+		}
+		if (field.RangeMin == "") != (field.RangeMax == "") {
+			return fmt.Errorf("field %q must define both range_min and range_max", field.Name)
+		}
+		if field.RangeMin != "" {
+			switch field.Type {
+			case "int64":
+				minimum, minErr := strconv.ParseInt(field.RangeMin, 10, 64)
+				maximum, maxErr := strconv.ParseInt(field.RangeMax, 10, 64)
+				if minErr != nil || maxErr != nil || minimum > maximum {
+					return fmt.Errorf("invalid range for field %q", field.Name)
+				}
+			case "datetime":
+				minimum, minErr := time.Parse("15:04", field.RangeMin)
+				maximum, maxErr := time.Parse("15:04", field.RangeMax)
+				if minErr != nil || maxErr != nil || minimum.After(maximum) {
+					return fmt.Errorf("invalid time range for field %q", field.Name)
+				}
+			default:
+				return fmt.Errorf("ranges are not supported for field %q of type %q", field.Name, field.Type)
+			}
+		}
 	}
 	for _, field := range entity.Unique {
 		if !seen[field] {
 			return fmt.Errorf("unique field %q is not defined", field)
+		}
+	}
+	for _, rule := range entity.ValidationRules {
+		if len(rule.When) == 0 || len(rule.Required) == 0 {
+			return errors.New("validation rule must define when and required")
+		}
+		for field, value := range rule.When {
+			if !seen[field] {
+				return fmt.Errorf("validation condition field %q is not defined", field)
+			}
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("validation condition for field %q has an empty value", field)
+			}
+		}
+		for _, field := range rule.Required {
+			if !seen[field] {
+				return fmt.Errorf("validation required field %q is not defined", field)
+			}
 		}
 	}
 	return nil
@@ -635,7 +696,7 @@ import (
 func ModuleTabs() []*container.TabItem {
 	return []*container.TabItem{
 {{- range $index, $module := .Modules}}
-		container.NewTabItem("{{$module.Detail.Name}}", module{{$index}}.New{{goName $module.Master.Name}}View()),
+		container.NewTabItem("{{if $module.Label}}{{$module.Label}}{{else}}{{$module.Detail.Name}}{{end}}", module{{$index}}.New{{goName $module.Master.Name}}View()),
 {{- end}}
 	}
 }

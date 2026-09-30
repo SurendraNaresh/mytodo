@@ -4,6 +4,7 @@ type VotingEvent struct {
 	ID          int64
 	Title       string
 	Description *string
+	EventType   string
 	OpensAt     string
 	ClosesAt    string
 }
@@ -13,4 +14,5 @@ type Vote struct {
 	VotingEventID int64
 	VoterUserId   int64
 	Choice        string
+	Comments      *string
 }

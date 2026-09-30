@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync/atomic"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -41,6 +43,12 @@ type User struct {
 	PasswordHash string
 }
 
+var remoteAPIEnabled atomic.Bool
+
+func UseRemoteAPI(enabled bool) {
+	remoteAPIEnabled.Store(enabled)
+}
+
 func (u *User) VerifyPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword(
 		[]byte(u.PasswordHash),
@@ -70,6 +78,19 @@ func CreateUser(
 
 	if password == "" {
 		return nil, errors.New("password is required")
+	}
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		remoteUser, err := client.SaveUser(api.User{
+			Name: name, DOB: dob, Email: email, Role: string(role), ParentID: nullableIDPointer(parentID),
+		}, password)
+		if err != nil {
+			return nil, err
+		}
+		return UserFromAPI(remoteUser), nil
 	}
 
 	hash, err := bcrypt.GenerateFromPassword(
@@ -120,6 +141,16 @@ func UpdateUser(u *User, newPassword string) error {
 	if u.Email == "" {
 		return errors.New("email is required")
 	}
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		_, err = client.SaveUser(api.User{
+			ID: u.ID, Name: u.Name, DOB: u.DOB, Email: u.Email, Role: string(u.Role), ParentID: nullableIDPointer(u.ParentID),
+		}, newPassword)
+		return err
+	}
 
 	if newPassword != "" {
 		hash, err := bcrypt.GenerateFromPassword(
@@ -156,6 +187,13 @@ func UpdateUser(u *User, newPassword string) error {
 }
 
 func DeleteUser(id int64) error {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return err
+		}
+		return client.DeleteUser(id)
+	}
 	_, err := db.DB().Exec(`
 		DELETE FROM users
 		WHERE id = ?
@@ -165,6 +203,17 @@ func DeleteUser(id int64) error {
 }
 
 func GetUser(id int64) (*User, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		remoteUser, err := client.User(id)
+		if err != nil {
+			return nil, err
+		}
+		return UserFromAPI(remoteUser), nil
+	}
 	row := db.DB().QueryRow(`
 		SELECT
 		    id,
@@ -207,6 +256,21 @@ func GetUserByEmail(email string) (*User, error) {
 }
 
 func GetUsers() ([]User, error) {
+	if remoteAPIEnabled.Load() {
+		client, err := api.Default()
+		if err != nil {
+			return nil, err
+		}
+		remoteUsers, err := client.ListUsers()
+		if err != nil {
+			return nil, err
+		}
+		users := make([]User, 0, len(remoteUsers))
+		for _, user := range remoteUsers {
+			users = append(users, *UserFromAPI(user))
+		}
+		return users, nil
+	}
 	rows, err := db.DB().Query(`
 		SELECT
 		    id,
@@ -247,6 +311,21 @@ func GetUsers() ([]User, error) {
 	}
 
 	return users, rows.Err()
+}
+
+func UserFromAPI(remoteUser api.User) *User {
+	user := &User{ID: remoteUser.ID, Name: remoteUser.Name, DOB: remoteUser.DOB, Email: remoteUser.Email, Role: Role(remoteUser.Role)}
+	if remoteUser.ParentID != nil {
+		user.ParentID = sql.NullInt64{Int64: *remoteUser.ParentID, Valid: true}
+	}
+	return user
+}
+
+func nullableIDPointer(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
 }
 
 func scanUser(row *sql.Row) (*User, error) {

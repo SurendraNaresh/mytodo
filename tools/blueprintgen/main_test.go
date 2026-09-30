@@ -13,19 +13,25 @@ func testBlueprint() Blueprint {
 		Modules: []Module{{
 			Name:    "voting",
 			Package: "voting",
+			Label:   "Event",
 			Master: Entity{
 				Name:   "voting_event",
 				Unique: []string{"title"},
 				Fields: []Field{
 					{Name: "title", Label: "Title", Type: "text", Required: true},
 					{Name: "description", Label: "Description", Type: "text"},
-					{Name: "opens_at", Label: "Opens", Type: "datetime", Required: true},
+					{Name: "opens_at", Label: "Opens", Type: "datetime", Required: true, RangeMin: "06:00", RangeMax: "22:00"},
 					{Name: "closes_at", Label: "Closes", Type: "datetime", Required: true},
 				},
 			},
 			Detail: Entity{
-				Name:   "vote",
-				Fields: []Field{{Name: "voter_user_id", Type: "int64", Required: true}},
+				Name: "vote",
+				Fields: []Field{
+					{Name: "voter_user_id", Type: "int64", Required: true},
+					{Name: "choice", Type: "text", Required: true, Options: []string{"Yes", "No", "Abstain"}},
+					{Name: "comments", Type: "text"},
+				},
+				ValidationRules: []ValidationRule{{When: map[string]string{"choice": "Abstain"}, Required: []string{"comments"}}},
 			},
 		}},
 		Types: []Type{{
@@ -36,6 +42,24 @@ func testBlueprint() Blueprint {
 			LogicRule:    LogicRule{Validation: "fnValidateManager"},
 			UI:           TypeUI{ListCols: []string{"ndc_1"}, FormOrder: []string{"ndc_1"}},
 		}},
+	}
+}
+
+func TestValidateEntityRangesAndConditionalRequiredFields(t *testing.T) {
+	blueprint := testBlueprint()
+	if _, err := load(writeBlueprint(t, blueprint)); err != nil {
+		t.Fatalf("valid ranges and conditional rule rejected: %v", err)
+	}
+
+	blueprint.Modules[0].Detail.ValidationRules[0].Required = []string{"missing"}
+	if _, err := load(writeBlueprint(t, blueprint)); err == nil || !strings.Contains(err.Error(), `validation required field "missing" is not defined`) {
+		t.Fatalf("expected undefined conditional field rejection, got %v", err)
+	}
+
+	blueprint = testBlueprint()
+	blueprint.Modules[0].Master.Fields[2].RangeMax = "05:00"
+	if _, err := load(writeBlueprint(t, blueprint)); err == nil || !strings.Contains(err.Error(), "invalid time range") {
+		t.Fatalf("expected reversed time range rejection, got %v", err)
 	}
 }
 
@@ -158,12 +182,41 @@ func TestRenderIncludesMasterAndDetailCRUD(t *testing.T) {
 		}
 	}
 	registry := string(outputs["modules.go"])
-	if !strings.Contains(registry, `container.NewTabItem("vote"`) || !strings.Contains(registry, "NewVotingEventView()") {
-		t.Fatalf("generated module tabs do not wire the vote view: %s", registry)
+	if !strings.Contains(registry, `container.NewTabItem("Event"`) || !strings.Contains(registry, "NewVotingEventView()") {
+		t.Fatalf("generated module tabs do not wire the Event view: %s", registry)
 	}
 	sql := string(outputs[filepath.Join("voting", "voting.sql")])
 	if !strings.Contains(sql, "UNIQUE (title)") {
 		t.Fatalf("generated master table is missing its unique constraint: %s", sql)
+	}
+}
+
+func TestRemovingModuleFromBlueprintRemovesItsTab(t *testing.T) {
+	blueprint := testBlueprint()
+	blueprint.Modules = append(blueprint.Modules, Module{
+		Name:    "user_management",
+		Package: "user_management",
+		Master:  Entity{Name: "users_profile"},
+		Detail:  Entity{Name: "userdetails"},
+	})
+	outputs, err := renderBlueprint(blueprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(outputs["modules.go"]), `container.NewTabItem("userdetails"`) {
+		t.Fatal("configured userdetails module is missing its tab")
+	}
+
+	blueprint.Modules = blueprint.Modules[:1]
+	outputs, err = renderBlueprint(blueprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(outputs["modules.go"]), "userdetails") || strings.Contains(string(outputs["modules.go"]), "generated/user_management") {
+		t.Fatalf("removed module remains in generated tabs: %s", outputs["modules.go"])
+	}
+	if _, exists := outputs[filepath.Join("user_management", "user_management_view.go")]; exists {
+		t.Fatal("removed module's source was still generated")
 	}
 }
 

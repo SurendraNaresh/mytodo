@@ -1,4 +1,4 @@
-// build+  !js
+//go:build !js
 
 package db
 
@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	_ "modernc.org/sqlite"
 )
@@ -67,9 +68,10 @@ func DataDir() (string, error) {
 		return filepath.Abs(dir)
 	}
 
-	// os.UserConfigDir() returns a user-writable application
-	// configuration/data location without requiring root.
 	base, err := os.UserConfigDir()
+	if runtime.GOOS == "windows" {
+		base, err = os.UserCacheDir()
+	}
 	if err != nil {
 		return "", err
 	}

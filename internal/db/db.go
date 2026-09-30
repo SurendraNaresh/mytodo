@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -137,8 +138,13 @@ func migrate() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		title TEXT NOT NULL,
 		description TEXT,
+		event_type TEXT NOT NULL DEFAULT 'Vote' CHECK (event_type IN ('Vote', 'Internal', 'External', 'Personal')),
+		event_class TEXT NOT NULL DEFAULT 'Public',
+		event_date TEXT NOT NULL DEFAULT '',
 		opens_at TEXT NOT NULL,
-		closes_at TEXT NOT NULL
+		closes_at TEXT NOT NULL,
+		owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 	);
 
 	CREATE TABLE IF NOT EXISTS vote (
@@ -146,6 +152,7 @@ func migrate() error {
 		voting_event_id INTEGER NOT NULL REFERENCES voting_event(id) ON DELETE CASCADE,
 		voter_user_id INTEGER NOT NULL,
 		choice TEXT NOT NULL,
+		comments TEXT,
 		UNIQUE (voting_event_id, voter_user_id)
 	);
 
@@ -198,8 +205,110 @@ func migrate() error {
 	if err != nil {
 		return fmt.Errorf("schema migration failed: %w", err)
 	}
+	if err := ensureColumn(conn, "voting_event", "event_type", "TEXT NOT NULL DEFAULT 'Vote'"); err != nil {
+		return fmt.Errorf("add voting event type: %w", err)
+	}
+	if err := ensureColumn(conn, "voting_event", "event_class", "TEXT NOT NULL DEFAULT 'Public'"); err != nil {
+		return fmt.Errorf("add event classification: %w", err)
+	}
+	if err := ensureColumn(conn, "voting_event", "event_date", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("add event date: %w", err)
+	}
+	if _, err := conn.Exec(`UPDATE voting_event SET event_date = substr(closes_at, 1, 10) WHERE event_date = ''`); err != nil {
+		return fmt.Errorf("backfill event date: %w", err)
+	}
+	if err := ensureColumn(conn, "voting_event", "owner_user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"); err != nil {
+		return fmt.Errorf("add event owner: %w", err)
+	}
+	if err := ensureColumn(conn, "voting_event", "is_active", "INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))"); err != nil {
+		return fmt.Errorf("add event status: %w", err)
+	}
+	if err := migrateVotingEventType(conn); err != nil {
+		return fmt.Errorf("update event type constraint: %w", err)
+	}
+	if err := ensureColumn(conn, "vote", "comments", "TEXT"); err != nil {
+		return fmt.Errorf("add vote comments: %w", err)
+	}
 
 	return nil
+}
+
+func migrateVotingEventType(conn *sql.DB) error {
+	var tableSQL string
+	if err := conn.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'voting_event'`).Scan(&tableSQL); err != nil {
+		return err
+	}
+	if strings.Contains(strings.ToLower(tableSQL), "'personal'") {
+		return nil
+	}
+
+	connection, err := conn.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(context.Background(), `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+
+	tx, err := connection.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE voting_event_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			description TEXT,
+			event_type TEXT NOT NULL DEFAULT 'Vote' CHECK (event_type IN ('Vote', 'Internal', 'External', 'Personal')),
+			event_class TEXT NOT NULL DEFAULT 'Public',
+			event_date TEXT NOT NULL DEFAULT '',
+			opens_at TEXT NOT NULL,
+			closes_at TEXT NOT NULL,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+		)`,
+		`INSERT INTO voting_event_new (id, title, description, event_type, event_class, event_date, opens_at, closes_at, owner_user_id, is_active)
+			SELECT id, title, description, event_type, event_class, event_date, opens_at, closes_at, owner_user_id, is_active FROM voting_event`,
+		`DROP TABLE voting_event`,
+		`ALTER TABLE voting_event_new RENAME TO voting_event`,
+		`CREATE INDEX IF NOT EXISTS ix_vote_parent ON vote(voting_event_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func ensureColumn(conn *sql.DB, table, column, definition string) error {
+	rows, err := conn.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	_, err = conn.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+	return err
 }
 
 func Open() error {

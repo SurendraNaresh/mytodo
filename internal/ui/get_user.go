@@ -130,13 +130,7 @@ func (s *AppState) ShowUsers() {
 		},
 
 		func() fyne.CanvasObject {
-			return container.NewBorder(
-				nil,
-				nil,
-				nil,
-				widget.NewLabel("Member"),
-				widget.NewLabel("User"),
-			)
+			return container.NewVBox(widget.NewLabel(""), widget.NewLabel(""))
 		},
 
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
@@ -144,19 +138,8 @@ func (s *AppState) ShowUsers() {
 
 			box := obj.(*fyne.Container)
 
-			label := box.Objects[0].(*widget.Label)
-			role := box.Objects[1].(*widget.Label)
-
-			label.SetText(
-				fmt.Sprintf(
-					"%s\n%s | DOB: %s",
-					u.Name,
-					u.Email,
-					u.DOB,
-				),
-			)
-
-			role.SetText(string(u.Role))
+			box.Objects[0].(*widget.Label).SetText(fmt.Sprintf("%d | %s", u.ID, u.Role))
+			box.Objects[1].(*widget.Label).SetText(u.Email)
 		},
 	)
 

@@ -123,6 +123,24 @@ Each module has `name`, `package`, `master`, and `detail`. Each entity has a tab
 }
 ```
 
+Text fields may declare `options` for a fixed set of values. Numeric `int64`
+fields may declare numeric `range_min` and `range_max`; `datetime` fields may
+declare clock-time bounds in `HH:MM` format. An entity may declare
+`validation_rules` using equality conditions in `when` and fields that become
+required in `required`. All referenced fields must belong to that entity. For
+example, a vote requires a comment when its choice is `Abstain`:
+
+```json
+{
+  "validation_rules": [
+    { "when": { "choice": "Abstain" }, "required": ["comments"] }
+  ]
+}
+```
+
+These constraints are validated by the generator; the domain UI and service
+must also enforce the applicable values when accepting user input.
+
 Supported field types are intentionally small. Add a type only when the generator defines its SQL type, Go type, input widget, validation, and migration behavior together.
 
 The optional top-level `types` array is also decoded and retained. Each entry supports `type_key`, `type_id`, nullable `parent_type_id`, a string-valued `header` map, `logic_rule.validation`, and `ui.list_cols` / `ui.form_order`. Unknown struct fields are rejected so misspelled configuration is not silently discarded; keys inside `header` are intentionally dynamic.
