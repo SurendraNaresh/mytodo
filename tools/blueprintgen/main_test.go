@@ -191,6 +191,55 @@ func TestRenderIncludesMasterAndDetailCRUD(t *testing.T) {
 	}
 }
 
+func TestRenderStandaloneTablesIncludesConstraints(t *testing.T) {
+	blueprint := testBlueprint()
+	blueprint.Tables = []Table{
+		{
+			Name: "era",
+			Fields: []Field{
+				{Name: "slug", Type: "text", Required: true},
+				{Name: "title", Type: "text", Required: true},
+			},
+			Unique: []string{"slug"},
+		},
+		{
+			Name:        "album",
+			Fields:      []Field{{Name: "era_id", Type: "int64", Required: true}},
+			ForeignKeys: []ForeignKey{{Field: "era_id", References: "era.id", OnDelete: "CASCADE"}},
+		},
+		{
+			Name:   "media",
+			Fields: []Field{{Name: "kind", Type: "text", Required: true, Options: []string{"photo", "short"}}},
+		},
+	}
+	if _, err := load(writeBlueprint(t, blueprint)); err != nil {
+		t.Fatalf("valid standalone tables rejected: %v", err)
+	}
+	outputs, err := renderBlueprint(blueprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := string(outputs["schema.sql"])
+	for _, expected := range []string{
+		"CREATE TABLE IF NOT EXISTS era",
+		"UNIQUE (slug)",
+		"FOREIGN KEY (era_id) REFERENCES era(id) ON DELETE CASCADE",
+		"CHECK (kind IN ('photo', 'short'))",
+	} {
+		if !strings.Contains(schema, expected) {
+			t.Errorf("generated schema is missing %q", expected)
+		}
+	}
+	if !strings.Contains(string(outputs[filepath.Join("schema", "schema.go")]), "const EraSchemaSQL =") {
+		t.Fatal("generated Go schema constant is missing")
+	}
+
+	blueprint.Tables[1].ForeignKeys[0].OnDelete = "DROP TABLE"
+	if _, err := load(writeBlueprint(t, blueprint)); err == nil {
+		t.Fatal("invalid foreign key action was accepted")
+	}
+}
+
 func TestRemovingModuleFromBlueprintRemovesItsTab(t *testing.T) {
 	blueprint := testBlueprint()
 	blueprint.Modules = append(blueprint.Modules, Module{

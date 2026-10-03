@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,10 +28,16 @@ import (
 const maxImportBytes = 256 << 20
 
 type Server struct {
-	mux       *http.ServeMux
-	requestMu sync.RWMutex
-	sessionMu sync.Mutex
-	sessions  map[string]session
+	mux            *http.ServeMux
+	requestMu      sync.RWMutex
+	sessionMu      sync.Mutex
+	sessions       map[string]session
+	sessionSecret  []byte
+	magicMu        sync.Mutex
+	magic          map[string]magicToken
+	requested      map[string]time.Time
+	sendMagicEmail func(string, string, string) error
+	probeDuration  func(string) (float64, error)
 }
 
 type session struct {
@@ -36,12 +45,27 @@ type session struct {
 	expires time.Time
 }
 
+type sessionClaims struct {
+	Subject int64  `json:"sub"`
+	Role    string `json:"role"`
+	Issued  int64  `json:"iat"`
+	Expires int64  `json:"exp"`
+	Nonce   string `json:"jti"`
+}
+
 type contextKey int
 
 const authenticatedUserKey contextKey = iota
 
 func New() *Server {
-	s := &Server{mux: http.NewServeMux(), sessions: make(map[string]session)}
+	secret := []byte(os.Getenv("SESSION_SECRET"))
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			secret = []byte("local-development-session-secret")
+		}
+	}
+	s := &Server{mux: http.NewServeMux(), sessions: make(map[string]session), sessionSecret: secret, magic: make(map[string]magicToken), requested: make(map[string]time.Time)}
 	s.routes()
 	return s
 }
@@ -58,9 +82,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /healthz", s.healthz)
 	const prefix = "/api/v1"
 	s.mux.HandleFunc("GET "+prefix+"/status", s.status)
+	s.mux.HandleFunc("GET "+prefix+"/eras", s.listEras)
+	s.mux.HandleFunc("GET "+prefix+"/eras/{slug}/albums", s.listEraAlbums)
+	s.mux.HandleFunc("GET "+prefix+"/albums/{id}/media", s.listAlbumMedia)
+	s.mux.HandleFunc("GET "+prefix+"/layout", s.listLayoutFrames)
+	s.mux.HandleFunc("GET "+prefix+"/donate/link", s.donateLink)
+	s.mux.HandleFunc("GET "+prefix+"/donate/qr", s.donateQR)
+	s.mux.HandleFunc("GET "+prefix+"/donate/status", s.donateStatus)
+	s.mux.HandleFunc("GET "+prefix+"/media/{id}/comments", s.authenticated(s.listMediaComments))
+	s.mux.HandleFunc("POST "+prefix+"/media/{id}/comments", s.authenticated(s.createMediaComment))
+	s.mux.HandleFunc("PUT "+prefix+"/admin/layout/{region}", s.authenticated(s.saveLayoutFrame))
+	s.mux.HandleFunc("POST "+prefix+"/admin/eras", s.authenticated(s.createEra))
+	s.mux.HandleFunc("POST "+prefix+"/admin/eras/{id}/albums", s.authenticated(s.createAlbum))
+	s.mux.HandleFunc("POST "+prefix+"/admin/albums/{id}/media", s.authenticated(s.uploadMedia))
+	s.mux.HandleFunc("GET /media/{id}", s.serveMedia)
+	s.mux.HandleFunc("GET /thumbs/{id}", s.serveThumbnail)
 	s.mux.HandleFunc("POST "+prefix+"/auth/login", s.login)
+	s.mux.HandleFunc("POST "+prefix+"/auth/magic-link", s.requestMagicLink)
+	s.mux.HandleFunc("POST "+prefix+"/auth/verify", s.verifyMagicLink)
 	s.mux.HandleFunc("POST "+prefix+"/auth/logout", s.authenticated(s.logout))
 	s.mux.HandleFunc("GET "+prefix+"/auth/me", s.authenticated(s.me))
 	s.mux.HandleFunc("GET "+prefix+"/users", s.authenticated(s.listUsers))
@@ -87,6 +129,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET "+prefix+"/events/{id}/summary", s.authenticated(s.eventVoteSummary))
 	s.mux.HandleFunc("GET "+prefix+"/events/{id}/vote", s.authenticated(s.getVote))
 	s.mux.HandleFunc("PUT "+prefix+"/events/{id}/vote", s.authenticated(s.saveVote))
+	s.mux.HandleFunc("GET "+prefix+"/artifacts", s.authenticated(s.listArtifacts))
+	s.mux.HandleFunc("POST "+prefix+"/artifacts", s.authenticated(s.createArtifact))
+	s.mux.HandleFunc("GET "+prefix+"/artifacts/{id}", s.authenticated(s.getArtifact))
+	s.mux.HandleFunc("GET "+prefix+"/artifacts/{id}/file", s.authenticated(s.downloadArtifact))
+	s.mux.HandleFunc("PUT "+prefix+"/artifacts/{id}", s.authenticated(s.updateArtifact))
+	s.mux.HandleFunc("DELETE "+prefix+"/artifacts/{id}", s.authenticated(s.deleteArtifact))
 	s.mux.HandleFunc("GET "+prefix+"/admin/backup", s.authenticated(s.backupDatabase))
 	s.mux.HandleFunc("POST "+prefix+"/admin/import", s.authenticated(s.importDatabase))
 }
@@ -98,10 +146,16 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		claims, err := s.parseSessionToken(token)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid or expired bearer token")
+			return
+		}
 		s.sessionMu.Lock()
-		stored, ok := s.sessions[token]
+		sessionID := s.sessionID(token)
+		stored, ok := s.sessions[sessionID]
 		if ok && time.Now().After(stored.expires) {
-			delete(s.sessions, token)
+			delete(s.sessions, sessionID)
 			ok = false
 		}
 		s.sessionMu.Unlock()
@@ -109,8 +163,12 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "session expired")
 			return
 		}
+		if claims.Subject != stored.userID || claims.Expires != stored.expires.Unix() {
+			writeError(w, http.StatusUnauthorized, "session is no longer valid")
+			return
+		}
 		user, err := model.GetUser(stored.userID)
-		if err != nil || user == nil {
+		if err != nil || user == nil || claims.Role != string(user.Role) {
 			writeError(w, http.StatusUnauthorized, "session is no longer valid")
 			return
 		}
@@ -126,6 +184,80 @@ func withUser(r *http.Request, user *model.User) context.Context {
 func currentUser(r *http.Request) *model.User {
 	user, _ := r.Context().Value(authenticatedUserKey).(*model.User)
 	return user
+}
+
+func (s *Server) sessionID(token string) string {
+	mac := hmac.New(sha256.New, s.sessionSecret)
+	_, _ = mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) storeSession(token string, value session) {
+	s.sessionMu.Lock()
+	s.sessions[s.sessionID(token)] = value
+	s.sessionMu.Unlock()
+}
+
+func (s *Server) issueSession(user *model.User, expires time.Time) (string, error) {
+	if user == nil || user.ID <= 0 || !expires.After(time.Now()) {
+		return "", errors.New("invalid session identity or expiry")
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	claims := sessionClaims{
+		Subject: user.ID, Role: string(user.Role), Issued: time.Now().Unix(),
+		Expires: expires.Unix(), Nonce: hex.EncodeToString(nonce),
+	}
+	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, s.sessionSecret)
+	_, _ = mac.Write([]byte(unsigned))
+	token := unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	s.storeSession(token, session{userID: user.ID, expires: time.Unix(expires.Unix(), 0)})
+	return token, nil
+}
+
+func (s *Server) parseSessionToken(token string) (sessionClaims, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return sessionClaims{}, errors.New("invalid JWT")
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return sessionClaims{}, errors.New("invalid JWT header")
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		Type      string `json:"typ"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil || header.Algorithm != "HS256" || header.Type != "JWT" {
+		return sessionClaims{}, errors.New("unsupported JWT header")
+	}
+	unsigned := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, s.sessionSecret)
+	_, _ = mac.Write([]byte(unsigned))
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || !hmac.Equal(signature, mac.Sum(nil)) {
+		return sessionClaims{}, errors.New("invalid JWT signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return sessionClaims{}, errors.New("invalid JWT claims")
+	}
+	var claims sessionClaims
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Subject <= 0 || claims.Role == "" || claims.Nonce == "" || claims.Expires <= time.Now().Unix() || claims.Issued > time.Now().Add(time.Minute).Unix() {
+		return sessionClaims{}, errors.New("invalid or expired JWT claims")
+	}
+	return claims, nil
 }
 
 func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
@@ -151,22 +283,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	token, err := s.issueSession(user, time.Now().Add(12*time.Hour))
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	token := hex.EncodeToString(tokenBytes)
-	s.sessionMu.Lock()
-	s.sessions[token] = session{userID: user.ID, expires: time.Now().Add(12 * time.Hour)}
-	s.sessionMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "token": token})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.sessionMu.Lock()
-	delete(s.sessions, token)
+	delete(s.sessions, s.sessionID(token))
 	s.sessionMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }

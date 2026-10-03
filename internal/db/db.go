@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	//	"github.com/SurendraNaresh/mytodo/internal/db"
+	generatedschema "github.com/SurendraNaresh/mytodo/generated/schema"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -158,6 +160,18 @@ func migrate() error {
 
 	CREATE INDEX IF NOT EXISTS ix_vote_parent ON vote(voting_event_id);
 
+	CREATE TABLE IF NOT EXISTS artifacts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_id INTEGER NOT NULL REFERENCES voting_event(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		file_path TEXT NOT NULL,
+		file_name TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS ix_artifacts_event ON artifacts(event_id, created_at DESC, id DESC);
+
 	-- ============================================================
 	-- BLUEPRINT-DRIVEN OBJECTS
 	-- ============================================================
@@ -204,6 +218,29 @@ func migrate() error {
 	_, err := conn.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("schema migration failed: %w", err)
+	}
+	if _, err := conn.Exec(generatedschema.EraSchemaSQL); err != nil {
+		return fmt.Errorf("era schema migration failed: %w", err)
+	}
+	if err := ensureColumn(conn, "comment", "created_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("add comment timestamp: %w", err)
+	}
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO layout_frame (region, feature, visible, config_json) VALUES
+		('top', 'timeline', 1, '{}'),
+		('bottom', 'donate_qr', 1, '{}'),
+		('left', 'era_title', 1, '{}'),
+		('center', 'album_grid', 1, '{}'),
+		('right', 'comments', 1, '{}')`); err != nil {
+		return fmt.Errorf("initialize layout frames: %w", err)
+	}
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO era (slug, title, sort_order, theme_json)
+		VALUES ('first-year', 'First Year', 1, '{"accent":"#df6049","bg":"#f5f4ef","font":"Fraunces"}')`); err != nil {
+		return fmt.Errorf("initialize first-year era: %w", err)
+	}
+	if _, err := conn.Exec(`INSERT INTO album (era_id, title, sort_order)
+		SELECT id, 'The little beginnings', 1 FROM era WHERE slug = 'first-year'
+		AND NOT EXISTS (SELECT 1 FROM album WHERE era_id = era.id AND title = 'The little beginnings')`); err != nil {
+		return fmt.Errorf("initialize first-year album: %w", err)
 	}
 	if err := ensureColumn(conn, "voting_event", "event_type", "TEXT NOT NULL DEFAULT 'Vote'"); err != nil {
 		return fmt.Errorf("add voting event type: %w", err)

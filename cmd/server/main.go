@@ -18,7 +18,9 @@ func main() {
 	defer db.Close()
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/v1/", server.New())
+	apiServer := server.New()
+	mux.Handle("/api/v1/", apiServer)
+	mux.Handle("/healthz", apiServer)
 	webDir := os.Getenv("MYTODO_WEB_DIR")
 	if webDir == "" {
 		webDir = "web"

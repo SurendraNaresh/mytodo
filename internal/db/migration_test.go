@@ -2,8 +2,43 @@ package db
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 )
+
+func TestOpenMigratesEraContentSchema(t *testing.T) {
+	t.Setenv("MYTODO_DATA_DIR", filepath.Join(t.TempDir(), "data"))
+	if err := Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Close() })
+
+	for _, table := range []string{"era", "album", "media", "comment", "layout_frame", "artifacts"} {
+		var name string
+		if err := DB().QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
+			t.Errorf("migrated table %q is missing: %v", table, err)
+		}
+	}
+	var frameCount int
+	if err := DB().QueryRow(`SELECT COUNT(*) FROM layout_frame`).Scan(&frameCount); err != nil || frameCount != 5 {
+		t.Fatalf("default layout frame count = %d, %v; want 5", frameCount, err)
+	}
+	if _, err := DB().Exec(`DELETE FROM layout_frame WHERE region = 'top'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DB().Exec(`INSERT INTO layout_frame (region, feature, visible, config_json) VALUES ('top', 'timeline', 1, '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DB().Exec(`INSERT INTO layout_frame (region, feature, visible, config_json) VALUES ('top', 'donate_qr', 1, '{}')`); err == nil {
+		t.Fatal("layout_frame accepted more than one row for a region")
+	}
+	if _, err := DB().Exec(`INSERT INTO layout_frame (region, feature, visible, config_json) VALUES ('invalid', 'timeline', 1, '{}')`); err == nil {
+		t.Fatal("layout_frame accepted an unsupported region")
+	}
+}
 
 func TestEnsureColumnAddsLegacyColumnAndIsIdempotent(t *testing.T) {
 	conn, err := sql.Open("sqlite", ":memory:")

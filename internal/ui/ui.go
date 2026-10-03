@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -36,9 +37,13 @@ type AppState struct {
 
 	Session *auth.Session
 
-	Content  *fyne.Container
-	Main     *fyne.Container
-	FirstRun bool
+	Content           *fyne.Container
+	Main              *fyne.Container
+	FirstRun          bool
+	mediaMu           sync.Mutex
+	localUploadClient *api.Client
+	localUploadClose  func()
+	dropWatcherCancel chan struct{}
 }
 
 func NewApp() *AppState {

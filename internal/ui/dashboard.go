@@ -38,6 +38,27 @@ func (s *AppState) ShowDashboard() {
 		},
 	)
 
+	layout := widget.NewButton("Canvas layout", func() {
+		s.showLayoutFrames()
+	})
+	if !s.Session.IsAdmin() {
+		layout.Hide()
+	}
+	upload := widget.NewButton("Upload memory", func() {
+		s.showMediaUpload()
+	})
+	if !s.Session.IsAdmin() {
+		upload.Hide()
+	} else {
+		s.startDropWatcher()
+	}
+	archive := widget.NewButton("Manage archive", func() {
+		s.showEraManager()
+	})
+	if !s.Session.IsAdmin() {
+		archive.Hide()
+	}
+
 	var generateUI *widget.Button
 	generateUI = widget.NewButton("Generate UI", func() {
 		if !s.Session.IsAdmin() {
@@ -190,6 +211,8 @@ func (s *AppState) ShowDashboard() {
 	logout := widget.NewButton(
 		"Logout",
 		func() {
+			s.stopDropWatcher()
+			s.closeLocalUploadClient()
 			s.Session.Logout()
 			s.ShowLogin()
 		},
@@ -210,6 +233,9 @@ func (s *AppState) ShowDashboard() {
 		widget.NewSeparator(),
 
 		admin,
+		layout,
+		upload,
+		archive,
 		generateUI,
 		importDatabase,
 		exportDatabase,

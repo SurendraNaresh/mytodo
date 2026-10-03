@@ -23,7 +23,21 @@ import (
 
 type Blueprint struct {
 	Modules []Module `json:"modules"`
+	Tables  []Table  `json:"tables"`
 	Types   []Type   `json:"types"`
+}
+
+type Table struct {
+	Name        string       `json:"name"`
+	Fields      []Field      `json:"fields"`
+	Unique      []string     `json:"unique"`
+	ForeignKeys []ForeignKey `json:"foreign_keys"`
+}
+
+type ForeignKey struct {
+	Field      string `json:"field"`
+	References string `json:"references"`
+	OnDelete   string `json:"on_delete"`
 }
 
 type Type struct {
@@ -109,7 +123,9 @@ func load(path string) (Blueprint, error) {
 		return Blueprint{}, fmt.Errorf("parse blueprint: %w", err)
 	}
 	if len(blueprint.Modules) == 0 {
-		return Blueprint{}, errors.New("blueprint must contain at least one module")
+		if len(blueprint.Tables) == 0 {
+			return Blueprint{}, errors.New("blueprint must contain at least one module")
+		}
 	}
 	seen := map[string]bool{}
 	for _, module := range blueprint.Modules {
@@ -127,6 +143,28 @@ func load(path string) (Blueprint, error) {
 		}
 		if err := validateEntity(module.Detail); err != nil {
 			return Blueprint{}, fmt.Errorf("%s detail: %w", module.Name, err)
+		}
+	}
+	for _, table := range blueprint.Tables {
+		if !identifier.MatchString(table.Name) || seen[table.Name] {
+			return Blueprint{}, fmt.Errorf("invalid or duplicate table name %q", table.Name)
+		}
+		seen[table.Name] = true
+		if err := validateEntity(Entity{Name: table.Name, Fields: table.Fields, Unique: table.Unique}); err != nil {
+			return Blueprint{}, fmt.Errorf("%s table: %w", table.Name, err)
+		}
+		fields := map[string]bool{}
+		for _, field := range table.Fields {
+			fields[field.Name] = true
+		}
+		for _, foreignKey := range table.ForeignKeys {
+			parts := strings.Split(foreignKey.References, ".")
+			if !fields[foreignKey.Field] || len(parts) != 2 || !identifier.MatchString(parts[0]) || !identifier.MatchString(parts[1]) {
+				return Blueprint{}, fmt.Errorf("%s table: invalid foreign key on %q", table.Name, foreignKey.Field)
+			}
+			if foreignKey.OnDelete != "" && foreignKey.OnDelete != "CASCADE" && foreignKey.OnDelete != "SET NULL" && foreignKey.OnDelete != "RESTRICT" {
+				return Blueprint{}, fmt.Errorf("%s table: invalid on_delete action %q", table.Name, foreignKey.OnDelete)
+			}
 		}
 	}
 	return blueprint, nil
@@ -302,7 +340,46 @@ func renderBlueprint(blueprint Blueprint) (map[string][]byte, error) {
 		return nil, err
 	}
 	outputs["modules.go"] = registry
+	if len(blueprint.Tables) > 0 {
+		statements := make([]string, 0, len(blueprint.Tables))
+		for _, table := range blueprint.Tables {
+			statements = append(statements, standaloneTableSQL(table))
+		}
+		outputs["schema.sql"] = []byte("-- Generated from blueprint. Review before applying.\n" + strings.Join(statements, "\n\n"))
+		schemaGo := "package schema\n\nconst EraSchemaSQL = " + strconv.Quote(string(outputs["schema.sql"])) + "\n"
+		outputs[filepath.Join("schema", "schema.go")] = []byte(schemaGo)
+	}
 	return outputs, nil
+}
+
+func standaloneTableSQL(table Table) string {
+	parts := []string{"id INTEGER PRIMARY KEY AUTOINCREMENT"}
+	for _, field := range table.Fields {
+		definition := field.Name + " " + sqlType(field.Type)
+		if field.Required {
+			definition += " NOT NULL"
+		}
+		if len(field.Options) > 0 {
+			options := make([]string, len(field.Options))
+			for index, option := range field.Options {
+				options[index] = "'" + strings.ReplaceAll(option, "'", "''") + "'"
+			}
+			definition += " CHECK (" + field.Name + " IN (" + strings.Join(options, ", ") + "))"
+		}
+		parts = append(parts, definition)
+	}
+	for _, field := range table.Unique {
+		parts = append(parts, "UNIQUE ("+field+")")
+	}
+	for _, foreignKey := range table.ForeignKeys {
+		reference := strings.SplitN(foreignKey.References, ".", 2)
+		definition := "FOREIGN KEY (" + foreignKey.Field + ") REFERENCES " + reference[0] + "(" + reference[1] + ")"
+		if foreignKey.OnDelete != "" {
+			definition += " ON DELETE " + foreignKey.OnDelete
+		}
+		parts = append(parts, definition)
+	}
+	return "CREATE TABLE IF NOT EXISTS " + table.Name + " (\n    " + strings.Join(parts, ",\n    ") + "\n);"
 }
 
 func generateBlueprint(blueprint Blueprint, root string) error {
@@ -652,6 +729,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// New{{goName .Master.Name}}View is a deliberately small generated starting point.
+// Add domain-specific layout and validation in a hand-written companion file.
 func New{{goName .Master.Name}}View() fyne.CanvasObject {
 	{{range .Master.Fields}}
 	{{if eq .Type "datetime"}}

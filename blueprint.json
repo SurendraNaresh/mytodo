@@ -31,6 +31,67 @@
     }
 
   ],
+  "tables": [
+    {
+      "name": "era",
+      "fields": [
+        { "name": "slug", "type": "text", "required": true },
+        { "name": "title", "type": "text", "required": true },
+        { "name": "sort_order", "type": "int64", "required": true },
+        { "name": "theme_json", "type": "text", "required": true }
+      ],
+      "unique": ["slug"]
+    },
+    {
+      "name": "album",
+      "fields": [
+        { "name": "era_id", "type": "int64", "required": true },
+        { "name": "title", "type": "text", "required": true },
+        { "name": "sort_order", "type": "int64", "required": true }
+      ],
+      "foreign_keys": [
+        { "field": "era_id", "references": "era.id", "on_delete": "CASCADE" }
+      ]
+    },
+    {
+      "name": "media",
+      "fields": [
+        { "name": "album_id", "type": "int64", "required": true },
+        { "name": "kind", "type": "text", "required": true, "options": ["photo", "short"] },
+        { "name": "content_hash", "type": "text", "required": true },
+        { "name": "duration_s", "type": "int64" },
+        { "name": "caption", "type": "text" },
+        { "name": "sort_order", "type": "int64", "required": true }
+      ],
+      "unique": ["content_hash"],
+      "foreign_keys": [
+        { "field": "album_id", "references": "album.id", "on_delete": "CASCADE" }
+      ]
+    },
+    {
+      "name": "comment",
+      "fields": [
+        { "name": "media_id", "type": "int64", "required": true },
+        { "name": "user_id", "type": "int64", "required": true },
+        { "name": "body", "type": "text", "required": true },
+        { "name": "created_at", "type": "text", "required": true }
+      ],
+      "foreign_keys": [
+        { "field": "media_id", "references": "media.id", "on_delete": "CASCADE" },
+        { "field": "user_id", "references": "users.id", "on_delete": "CASCADE" }
+      ]
+    },
+    {
+      "name": "layout_frame",
+      "fields": [
+        { "name": "region", "type": "text", "required": true, "options": ["top", "bottom", "left", "right", "center"] },
+        { "name": "feature", "type": "text", "required": true },
+        { "name": "visible", "type": "bool", "required": true },
+        { "name": "config_json", "type": "text", "required": true }
+      ],
+      "unique": ["region"]
+    }
+  ],
   "types": [
     {
       "type_key": "manager",

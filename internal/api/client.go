@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +56,16 @@ type Event struct {
 	VoteCount   int    `json:"vote_count"`
 }
 
+type Artifact struct {
+	ID          int64  `json:"id"`
+	EventID     int64  `json:"event_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	FileName    string `json:"file_name"`
+	FileURL     string `json:"file_url"`
+	CreatedAt   string `json:"created_at"`
+}
+
 type Vote struct {
 	Choice   string `json:"choice"`
 	Comments string `json:"comments"`
@@ -63,6 +75,37 @@ type VoteSummary struct {
 	Yes     int `json:"yes"`
 	No      int `json:"no"`
 	Abstain int `json:"abstain"`
+}
+
+type Era struct {
+	ID        int64           `json:"id"`
+	Slug      string          `json:"slug"`
+	Title     string          `json:"title"`
+	SortOrder int64           `json:"sort_order"`
+	Theme     json.RawMessage `json:"theme"`
+}
+
+type Album struct {
+	ID        int64  `json:"id"`
+	EraID     int64  `json:"era_id"`
+	Title     string `json:"title"`
+	SortOrder int64  `json:"sort_order"`
+}
+
+type Media struct {
+	ID       int64  `json:"id"`
+	Kind     string `json:"kind"`
+	Duration int64  `json:"duration_s,omitempty"`
+	Caption  string `json:"caption"`
+	URL      string `json:"url"`
+	ThumbURL string `json:"thumb_url"`
+}
+
+type LayoutFrame struct {
+	Region  string          `json:"region"`
+	Feature string          `json:"feature"`
+	Visible bool            `json:"visible"`
+	Config  json.RawMessage `json:"config"`
 }
 
 type Client struct {
@@ -78,17 +121,25 @@ var (
 )
 
 func Configure(baseURL string) error {
-	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("invalid API URL %q", baseURL)
+	client, err := NewClient(baseURL)
+	if err != nil {
+		return err
 	}
 	defaultMu.Lock()
-	defaultClient = &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 30 * time.Second},
-	}
+	defaultClient = client
 	defaultMu.Unlock()
 	return nil
+}
+
+func NewClient(baseURL string) (*Client, error) {
+	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid API URL %q", baseURL)
+	}
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		client:  &http.Client{Timeout: 30 * time.Second},
+	}, nil
 }
 
 func ConfigureFromEnvironment() error {
@@ -244,6 +295,94 @@ func (c *Client) DeleteUser(id int64) error {
 	return c.request(http.MethodDelete, fmt.Sprintf("/users/%d", id), nil, nil)
 }
 
+func (c *Client) LayoutFrames() ([]LayoutFrame, error) {
+	var frames []LayoutFrame
+	err := c.request(http.MethodGet, "/layout", nil, &frames)
+	return frames, err
+}
+
+func (c *Client) SaveLayoutFrame(frame LayoutFrame) error {
+	var input struct {
+		Feature string          `json:"feature"`
+		Visible bool            `json:"visible"`
+		Config  json.RawMessage `json:"config"`
+	}
+	input.Feature, input.Visible = frame.Feature, frame.Visible
+	input.Config = frame.Config
+	return c.request(http.MethodPut, "/admin/layout/"+url.PathEscape(frame.Region), input, nil)
+}
+
+func (c *Client) Eras() ([]Era, error) {
+	var eras []Era
+	err := c.request(http.MethodGet, "/eras", nil, &eras)
+	return eras, err
+}
+
+func (c *Client) Albums(eraSlug string) ([]Album, error) {
+	var albums []Album
+	err := c.request(http.MethodGet, "/eras/"+url.PathEscape(eraSlug)+"/albums", nil, &albums)
+	return albums, err
+}
+
+func (c *Client) CreateEra(era Era) (Era, error) {
+	var created Era
+	err := c.request(http.MethodPost, "/admin/eras", era, &created)
+	return created, err
+}
+
+func (c *Client) CreateAlbum(eraID int64, album Album) (Album, error) {
+	var created Album
+	err := c.request(http.MethodPost, fmt.Sprintf("/admin/eras/%d/albums", eraID), album, &created)
+	return created, err
+}
+
+func (c *Client) UploadMedia(albumID int64, kind, filename, caption string, content io.Reader) (Media, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("kind", kind); err != nil {
+		return Media{}, err
+	}
+	if err := writer.WriteField("caption", caption); err != nil {
+		return Media{}, err
+	}
+	part, err := writer.CreateFormFile("file", filepath.Base(filename))
+	if err != nil {
+		return Media{}, err
+	}
+	if _, err := io.Copy(part, content); err != nil {
+		return Media{}, err
+	}
+	if err := writer.Close(); err != nil {
+		return Media{}, err
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, fmt.Sprintf("%s/admin/albums/%d/media", c.baseURL, albumID), &body)
+	if err != nil {
+		return Media{}, err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if token := c.Token(); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return Media{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var result struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
+		if result.Error == "" {
+			result.Error = response.Status
+		}
+		return Media{}, fmt.Errorf("%s", result.Error)
+	}
+	var media Media
+	err = json.NewDecoder(response.Body).Decode(&media)
+	return media, err
+}
+
 func (c *Client) Projects() ([]Project, error) {
 	var values []Project
 	err := c.request(http.MethodGet, "/projects", nil, &values)
@@ -313,6 +452,114 @@ func (c *Client) SaveEvent(event Event) (Event, error) {
 	}
 	err := c.request(method, path, event, &saved)
 	return saved, err
+}
+
+func (c *Client) Artifacts(eventID int64) ([]Artifact, error) {
+	path := "/artifacts"
+	if eventID > 0 {
+		path += fmt.Sprintf("?event_id=%d", eventID)
+	}
+	var values []Artifact
+	err := c.request(http.MethodGet, path, nil, &values)
+	return values, err
+}
+
+func (c *Client) Artifact(id int64) (Artifact, error) {
+	var artifact Artifact
+	err := c.request(http.MethodGet, fmt.Sprintf("/artifacts/%d", id), nil, &artifact)
+	return artifact, err
+}
+
+func (c *Client) UploadArtifact(artifact Artifact, filename string, content io.Reader) (Artifact, error) {
+	return c.saveArtifact(artifact, filename, content)
+}
+
+func (c *Client) UpdateArtifact(artifact Artifact, filename string, content io.Reader) (Artifact, error) {
+	return c.saveArtifact(artifact, filename, content)
+}
+
+func (c *Client) saveArtifact(artifact Artifact, filename string, content io.Reader) (Artifact, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range map[string]string{
+		"event_id":    strconv.FormatInt(artifact.EventID, 10),
+		"title":       artifact.Title,
+		"description": artifact.Description,
+	} {
+		if err := writer.WriteField(key, value); err != nil {
+			return Artifact{}, err
+		}
+	}
+	if content != nil {
+		part, err := writer.CreateFormFile("file", filepath.Base(filename))
+		if err != nil {
+			return Artifact{}, err
+		}
+		if _, err := io.Copy(part, content); err != nil {
+			return Artifact{}, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return Artifact{}, err
+	}
+	path, method := "/artifacts", http.MethodPost
+	if artifact.ID != 0 {
+		path, method = fmt.Sprintf("/artifacts/%d", artifact.ID), http.MethodPut
+	}
+	request, err := http.NewRequestWithContext(context.Background(), method, c.baseURL+path, &body)
+	if err != nil {
+		return Artifact{}, err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if token := c.Token(); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return Artifact{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return Artifact{}, decodeAPIError(response)
+	}
+	var saved Artifact
+	err = json.NewDecoder(response.Body).Decode(&saved)
+	return saved, err
+}
+
+func (c *Client) DeleteArtifact(id int64) error {
+	return c.request(http.MethodDelete, fmt.Sprintf("/artifacts/%d", id), nil, nil)
+}
+
+func (c *Client) DownloadArtifact(id int64, destination io.Writer) error {
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/artifacts/%d/file", c.baseURL, id), nil)
+	if err != nil {
+		return err
+	}
+	if token := c.Token(); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return decodeAPIError(response)
+	}
+	_, err = io.Copy(destination, response.Body)
+	return err
+}
+
+func decodeAPIError(response *http.Response) error {
+	var result struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
+	if result.Error == "" {
+		result.Error = response.Status
+	}
+	return fmt.Errorf("%s", result.Error)
 }
 
 func (c *Client) DeleteEvent(id int64) error {
