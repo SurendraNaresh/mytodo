@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/SurendraNaresh/mytodo/internal/api"
+	"github.com/SurendraNaresh/mytodo/internal/clientdata"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 )
 
@@ -375,6 +376,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 				eventFilterStatus.SetText(err.Error())
 				return
 			}
+			_ = clientdata.SaveEvents(remoteEvents)
 			for _, event := range remoteEvents {
 				loadedEvents = append(loadedEvents, votingEventRow{
 					id: event.ID, title: event.Title, description: event.Description,

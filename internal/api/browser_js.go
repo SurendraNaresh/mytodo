@@ -13,6 +13,14 @@ func ConfigureFromBrowser() error {
 	if window.IsUndefined() || window.IsNull() {
 		return fmt.Errorf("browser window is unavailable")
 	}
-	origin := window.Get("location").Get("origin").String()
-	return Configure(origin + "/api/v1")
+	location := window.Get("location")
+	search := location.Get("search").String()
+	if search != "" {
+		parameters := js.Global().Get("URLSearchParams").New(search)
+		apiURL := parameters.Call("get", "api")
+		if !apiURL.IsNull() && apiURL.String() != "" {
+			return Configure(apiURL.String())
+		}
+	}
+	return Configure(location.Get("origin").String() + "/api/v1")
 }

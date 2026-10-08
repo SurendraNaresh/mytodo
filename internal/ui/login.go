@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/SurendraNaresh/mytodo/internal/api"
+	"github.com/SurendraNaresh/mytodo/internal/clientdata"
 	"github.com/SurendraNaresh/mytodo/internal/db"
 	"github.com/SurendraNaresh/mytodo/internal/model"
 )
@@ -21,12 +22,24 @@ func (s *AppState) ShowLogin() {
 	email := widget.NewEntry()
 	email.SetPlaceHolder("user@example.com")
 	pass := widget.NewPasswordEntry()
+	apiURL := widget.NewEntry()
+	apiURL.SetText(api.CurrentURL())
 	limitEntry(email, 50)
 	limitEntry(pass, 50)
 	status := widget.NewLabel("")
 	status.Alignment = fyne.TextAlignCenter
 
 	login := widget.NewButton("Login", func() {
+		if api.Enabled() {
+			if err := api.Configure(apiURL.Text); err != nil {
+				status.SetText(err.Error())
+				return
+			}
+			if err := clientdata.SaveSetting("api_url", apiURL.Text); err != nil {
+				status.SetText(err.Error())
+				return
+			}
+		}
 		err := s.Session.Login(
 			email.Text,
 			pass.Text,
@@ -35,6 +48,13 @@ func (s *AppState) ShowLogin() {
 		if err != nil {
 			status.SetText(err.Error())
 			return
+		}
+		if api.Enabled() {
+			if err := clientdata.SaveUser(s.Session.User); err != nil {
+				status.SetText(err.Error())
+				s.Session.Logout()
+				return
+			}
 		}
 
 		s.ShowDashboard()
@@ -48,12 +68,7 @@ func (s *AppState) ShowLogin() {
 	)
 
 	needsSetup := false
-	if api.Enabled() {
-		client, err := api.Default()
-		if err == nil {
-			needsSetup, _ = client.NeedsSetup()
-		}
-	} else {
+	if !api.Enabled() {
 		users, _ := model.GetUsers()
 		needsSetup = len(users) == 0
 	}
@@ -80,14 +95,52 @@ func (s *AppState) ShowLogin() {
 		status,
 	}
 
+	cardContent := container.NewVBox(items...)
+	if api.Enabled() {
+		var connect *widget.Button
+		connect = widget.NewButton("Check server", func() {
+			if err := api.Configure(apiURL.Text); err != nil {
+				status.SetText(err.Error())
+				return
+			}
+			if err := clientdata.SaveSetting("api_url", apiURL.Text); err != nil {
+				status.SetText(err.Error())
+				return
+			}
+			client, err := api.Default()
+			if err != nil {
+				status.SetText(err.Error())
+				return
+			}
+			connect.Disable()
+			status.SetText("Checking server...")
+			go func() {
+				needsSetup, err := client.NeedsSetup()
+				fyne.Do(func() {
+					connect.Enable()
+					if err != nil {
+						status.SetText(err.Error())
+						return
+					}
+					status.SetText("Server connected")
+					if needsSetup && bootstrap == nil {
+						bootstrap = widget.NewButton("Create first Admin", func() { s.showBootstrapAdmin() })
+						cardContent.Add(bootstrap)
+					}
+				})
+			}()
+		})
+		cardContent.Add(widget.NewForm(widget.NewFormItem("API server URL", apiURL)))
+		cardContent.Add(connect)
+	}
 	if bootstrap != nil {
-		items = append(items, bootstrap)
+		cardContent.Add(bootstrap)
 	}
 
 	card := widget.NewCard(
 		"Login",
 		"",
-		container.NewVBox(items...),
+		cardContent,
 	)
 
 	s.setContent(container.NewPadded(container.NewCenter(card)))

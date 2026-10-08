@@ -43,3 +43,29 @@ func TestDataDirHonorsOverride(t *testing.T) {
 		t.Fatalf("DataDir() = %q, want %q", got, want)
 	}
 }
+
+func TestCopyStarterIfMissing(t *testing.T) {
+	dir := t.TempDir()
+	starter := filepath.Join(dir, "starter.db")
+	destination := filepath.Join(dir, "data", "mytodo.db")
+	if err := os.WriteFile(starter, []byte("starter-data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyStarterIfMissing(starter, destination); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil || string(content) != "starter-data" {
+		t.Fatalf("copied starter = %q, %v", content, err)
+	}
+	if err := os.WriteFile(destination, []byte("existing-data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyStarterIfMissing(starter, destination); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(destination)
+	if err != nil || string(content) != "existing-data" {
+		t.Fatalf("existing database = %q, %v", content, err)
+	}
+}

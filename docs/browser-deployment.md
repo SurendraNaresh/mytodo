@@ -1,10 +1,8 @@
 # Browser and shared database deployment
 
-The browser build is a Fyne WebAssembly client. It does not open `wasm/mytodo.db`
-or any other SQLite file in the web root: static files are read-only browser
-resources, not a writable database location. Browser WASM sends authenticated
-domain requests to the Go API, which owns the SQLite database. Browser users
-and native clients configured for the server share that data.
+The browser build is a Fyne WebAssembly client. It does not open a SQLite file;
+the Go API server owns the shared database. Browser users and native clients
+configured for that server share the hosted data.
 
 ## Build and serve
 
@@ -18,45 +16,42 @@ module cache:
 .\scripts\fyne-web.ps1 package -os web -app-id com.fyneio.mytodo -name mysoc
 ```
 
-Copy the generated files from `wasm/` into the server's `web/` directory. The
-server serves those static assets and `/api/v1` from the same origin, avoiding
-browser CORS configuration.
+Serve the generated files from a static host or reverse proxy and route API
+requests to the Go server. The Go server is API-only and does not serve `web/`.
 
 For a single-process deployment, start the server with:
 
 ```powershell
-$env:MYTODO_LISTEN_ADDR = "127.0.0.1:8080"
-$env:MYTODO_DATA_DIR = "C:\mytodo-data"
+$env:PORT = "9876"
+$env:DB_FILENAME = "C:\mytodo-data\mytodo.db"
 go run ./cmd/server
 ```
 
 To run the API as a separate service, start the API-only command instead:
 
 ```powershell
-$env:MYTODO_LISTEN_ADDR = "127.0.0.1:8081"
-$env:MYTODO_DATA_DIR = "C:\mytodo-data"
+$env:PORT = "9876"
+$env:DB_FILENAME = "C:\mytodo-data\mytodo.db"
 go run ./cmd/api
 ```
 
-Configure the web server or reverse proxy to send `/api/v1/` requests to
-`http://127.0.0.1:8081/api/v1/` and serve all other paths from the packaged
-Fyne web files. Keep the API and browser on the same public origin; the browser
-client currently derives its API URL from `window.location.origin`, so direct
-cross-origin API hosting is not configured. Confirm routing before trying to
-log in: `GET https://your-host/api/v1/status` must return JSON, not a static-host
-501 response. Do not route `/api/v1/` to the static-file handler.
+The browser client uses `window.location.origin` by default. For a separately
+hosted UI, pass the API root in the page URL as `?api=<URL-encoded-api-root>`;
+the API server must allow the UI origin in `CORS_ORIGINS`. Confirm routing
+before logging in:
+`GET https://your-host/api/v1/status` must return JSON.
 
 For deployment, use HTTPS behind a reverse proxy, set a persistent
-`MYTODO_DATA_DIR`, and configure the listener/reverse proxy deliberately. Do
-not expose the development server directly to the public internet.
+`DB_FILENAME`, and configure the listener deliberately. Do not expose the
+development server directly to the public internet.
 
 ## Native client
 
-The native app keeps local SQLite by default. To make it use the shared server,
-set `MYTODO_API_URL` to the API root before starting it:
+The native app uses `local_data.db` for client-local settings, theme, profile,
+and event cache. It connects to the shared server using `API_URL` in `.config`:
 
 ```powershell
-$env:MYTODO_API_URL = "https://todo.example.com/api/v1"
+$env:API_URL = "https://todo.example.com/api/v1"
 .\mytodo.exe
 ```
 
@@ -71,5 +66,82 @@ administrator-only consistent database snapshot. Restore/import remains
 on startup; `internal/db/migration_test.go` is test code, not a production API
 surface.
 
-The app's local Windows database path is `%LOCALAPPDATA%\mytodo\mytodo.db`;
-`MYTODO_DATA_DIR` overrides it. Browser users never open this file directly.
+The server database defaults to `./data/mytodo.db`. If it does not exist, the
+starter `mytodo.db` is copied there before migrations run. `.config` supports
+`PORT`, `DB_FILENAME`, `Local_Data_file`, `API_URL`, and `CORS_ORIGINS`;
+environment variables override file values.
+
+## Android Client
+
+With Android SDK and NDK installed, build a release APK using a lowercase Fyne
+target. Do not pass Go build flags such as `-p 8` to `--tags`:
+
+```powershell
+Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
+fyne package --target android/arm64 --source-dir . --release --app-id com.mytodo.desktop
+```
+
+The Android app stores client data in its private Fyne storage directory. On
+the login screen, enter `http://<server-ip>:9876/api/v1` in **API server URL**
+and select **Check server**; the URL is saved on that device. `127.0.0.1` on a
+phone refers to the phone, not the computer running the server. An `.config`
+file on the development PC is not automatically copied into the APK.
+
+If the APK still closes, connect the device with USB debugging enabled and
+capture its startup log:
+
+```powershell
+adb logcat -c
+adb shell monkey -p com.mytodo.desktop 1
+adb logcat -d | Select-String -Pattern 'FATAL EXCEPTION|panic:|MyTodo|mytodo'
+```
+
+## Windows LAN access
+
+The API listens on all interfaces at port `9876`. On the server PC, use
+`ipconfig` to find its Wi-Fi/Ethernet IPv4 address. From another device on the
+same non-guest network, check `http://192.168.1.10:9876/healthz` and
+`http://192.168.1.10:9876/api/v1/status`, replacing the example address with
+the server PC's address.
+
+If Windows Firewall blocks the connection, allow inbound TCP 9876 on the
+Private profile from an elevated PowerShell prompt:
+
+```powershell
+New-NetFirewallRule -DisplayName "MyTodo API 9876" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9876 -Profile Private
+```
+
+To serve a generated WASM directory from Python on port 9786, configure the
+server's `.config` with the exact UI origin, for example
+`CORS_ORIGINS=http://192.168.1.10:9786`, then run:
+
+```powershell
+python -m http.server 9786 --bind 0.0.0.0 --directory .\wasm-dir
+```
+
+Open the UI with the API root explicitly set (the example URL is already
+encoded):
+
+```text
+http://192.168.1.10:9786/?api=http%3A%2F%2F192.168.1.10%3A9876%2Fapi%2Fv1
+```
+
+Allow inbound TCP 9786 as well if the other devices cannot reach the Python
+static server. Use a trusted LAN only; use HTTPS and narrow `CORS_ORIGINS` for
+non-local deployments.
+
+## Native build target
+
+Before building the Windows desktop or server, make sure a previous WASM build
+has not left target variables in the shell:
+
+```powershell
+Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
+go env GOOS GOARCH CGO_ENABLED GOFLAGS
+go build -trimpath -ldflags="-s -w" -o .\mytodo-server.exe .\cmd\server
+go build -p 8 -v -o .\mytodo-desktop.exe .
+```
+
+The native target should report `windows` and `amd64`. `GOOS=js` intentionally
+excludes the server entry point and cannot build the Windows `os/user` support
+used by the desktop's Fyne font scanning dependencies.

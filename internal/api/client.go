@@ -26,6 +26,24 @@ type User struct {
 	Role     string `json:"role"`
 }
 
+type PasswordPolicy struct {
+	MinimumLength    int  `json:"minimum_length"`
+	RequireSpecial   bool `json:"require_special"`
+	RequireMixedCase bool `json:"require_mixed_case"`
+}
+
+type PasswordResetRequest struct {
+	ID             int64  `json:"id"`
+	UserID         int64  `json:"user_id"`
+	UserName       string `json:"user_name"`
+	UserEmail      string `json:"user_email"`
+	TimeframeStart string `json:"timeframe_start"`
+	TimeframeEnd   string `json:"timeframe_end"`
+	Reason         string `json:"reason"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+}
+
 type Project struct {
 	ID          int64  `json:"id"`
 	OwnerID     int64  `json:"owner_id"`
@@ -154,6 +172,15 @@ func Enabled() bool {
 	defaultMu.RLock()
 	defer defaultMu.RUnlock()
 	return defaultClient != nil
+}
+
+func CurrentURL() string {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	if defaultClient == nil {
+		return ""
+	}
+	return defaultClient.baseURL
 }
 
 func Disable() {
@@ -293,6 +320,43 @@ func (c *Client) SaveUser(user User, password string) (User, error) {
 
 func (c *Client) DeleteUser(id int64) error {
 	return c.request(http.MethodDelete, fmt.Sprintf("/users/%d", id), nil, nil)
+}
+
+func (c *Client) ChangePassword(currentPassword, newPassword string) error {
+	return c.request(http.MethodPost, "/auth/password/change", map[string]string{
+		"current_password": currentPassword,
+		"new_password":     newPassword,
+	}, nil)
+}
+
+func (c *Client) RequestPasswordReset(start, end, reason string) error {
+	return c.request(http.MethodPost, "/auth/password/reset-requests", map[string]string{
+		"timeframe_start": start,
+		"timeframe_end":   end,
+		"reason":          reason,
+	}, nil)
+}
+
+func (c *Client) PasswordPolicy() (PasswordPolicy, error) {
+	var policy PasswordPolicy
+	err := c.request(http.MethodGet, "/admin/password-policy", nil, &policy)
+	return policy, err
+}
+
+func (c *Client) SavePasswordPolicy(policy PasswordPolicy) error {
+	return c.request(http.MethodPut, "/admin/password-policy", policy, nil)
+}
+
+func (c *Client) PasswordResetRequests() ([]PasswordResetRequest, error) {
+	var requests []PasswordResetRequest
+	err := c.request(http.MethodGet, "/admin/password-reset-requests", nil, &requests)
+	return requests, err
+}
+
+func (c *Client) ResetUserPassword(requestID int64, password string) error {
+	return c.request(http.MethodPost, fmt.Sprintf("/admin/password-reset-requests/%d/reset", requestID), map[string]string{
+		"default_password": password,
+	}, nil)
 }
 
 func (c *Client) LayoutFrames() ([]LayoutFrame, error) {

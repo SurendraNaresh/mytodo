@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/auth"
@@ -67,11 +68,26 @@ func NewApp() *AppState {
 		}
 	}
 
-	state.ShowLogin()
-
 	w.SetContent(state.Content)
 
 	return state
+}
+
+func ShowStartupError(err error) {
+	a := app.NewWithID("com.mytodo.startup-error")
+	w := a.NewWindow("Todo Master")
+	w.SetContent(startupErrorContent(err))
+	w.ShowAndRun()
+}
+
+func (s *AppState) ShowStartupError(err error) {
+	s.setContent(startupErrorContent(err))
+}
+
+func startupErrorContent(err error) fyne.CanvasObject {
+	message := widget.NewLabel("MyTodo could not start:\n" + err.Error())
+	message.Wrapping = fyne.TextWrapWord
+	return container.NewPadded(container.NewCenter(message))
 }
 
 func (s *AppState) setContent(obj fyne.CanvasObject) {

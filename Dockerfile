@@ -7,8 +7,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mytodo-server ./cm
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg sqlite3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 COPY --from=build /out/mytodo-server /usr/local/bin/mytodo-server
-COPY web /app/web
-ENV MYTODO_LISTEN_ADDR=0.0.0.0:8080 MYTODO_DATA_DIR=/data MYTODO_WEB_DIR=/app/web
-EXPOSE 8080
+COPY --from=build /src/mytodo.db /app/mytodo.db
+ENV PORT=9876 DB_FILENAME=/data/mytodo.db
+EXPOSE 9876
 CMD ["/usr/local/bin/mytodo-server"]

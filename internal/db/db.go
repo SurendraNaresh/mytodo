@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	//	"github.com/SurendraNaresh/mytodo/internal/db"
@@ -24,6 +25,7 @@ const (
 )
 
 var conn *sql.DB
+var activeFilename string
 
 func migrate() error {
 	schema := `
@@ -61,6 +63,25 @@ func migrate() error {
 		FOREIGN KEY (parent_id)
 			REFERENCES users(id)
 			ON DELETE SET NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS password_policy (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		minimum_length INTEGER NOT NULL DEFAULT 8 CHECK (minimum_length BETWEEN 1 AND 72),
+		require_special INTEGER NOT NULL DEFAULT 0 CHECK (require_special IN (0, 1)),
+		require_mixed_case INTEGER NOT NULL DEFAULT 0 CHECK (require_mixed_case IN (0, 1))
+	);
+
+	CREATE TABLE IF NOT EXISTS password_reset_request (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		timeframe_start TEXT NOT NULL,
+		timeframe_end TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending', 'Reset')),
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		resolved_at TEXT,
+		resolved_by INTEGER REFERENCES users(id)
 	);
 
 	-- ============================================================
@@ -219,6 +240,9 @@ func migrate() error {
 	if err != nil {
 		return fmt.Errorf("schema migration failed: %w", err)
 	}
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO password_policy (id) VALUES (1)`); err != nil {
+		return fmt.Errorf("initialize password policy: %w", err)
+	}
 	if _, err := conn.Exec(generatedschema.EraSchemaSQL); err != nil {
 		return fmt.Errorf("era schema migration failed: %w", err)
 	}
@@ -350,8 +374,12 @@ func ensureColumn(conn *sql.DB, table, column, definition string) error {
 
 func Open() error {
 	var err error
-
-	conn, err = InitDB()
+	dir, err := DataDir()
+	if err != nil {
+		return err
+	}
+	activeFilename = filepath.Join(dir, DBName)
+	conn, err = InitDBAt(activeFilename)
 	if err != nil {
 		return err
 	}
@@ -363,6 +391,28 @@ func Open() error {
 	}
 
 	return nil
+}
+
+func OpenAtPath(filename string) error {
+	var err error
+	activeFilename, err = filepath.Abs(filename)
+	if err != nil {
+		return err
+	}
+	conn, err = InitDBAt(activeFilename)
+	if err != nil {
+		return err
+	}
+	if err := migrate(); err != nil {
+		conn.Close()
+		conn = nil
+		return fmt.Errorf("database migration failed: %w", err)
+	}
+	return nil
+}
+
+func CurrentFilename() string {
+	return activeFilename
 }
 
 // OpenWithRestore restores backupPath before opening and migrating the database.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -114,6 +115,88 @@ func TestProtectedAPIRequiresBearerToken(t *testing.T) {
 		if response.Code != 401 {
 			t.Fatalf("GET %s returned %d, want 401", path, response.Code)
 		}
+	}
+}
+
+func TestMemberPasswordChangeAndAdminResetWorkflow(t *testing.T) {
+	t.Setenv("MYTODO_DATA_DIR", t.TempDir())
+	model.UseRemoteAPI(false)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		model.UseRemoteAPI(false)
+		_ = db.Close()
+	})
+
+	admin, err := model.CreateUser("Admin", "", "password-admin@example.test", model.RoleAdmin, "Admin-Password!1", sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := model.CreateUser("Member", "", "password-member@example.test", model.RoleMember, "Member-Password!1", sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	adminToken := testSessionToken(t, s, admin.ID, model.RoleAdmin)
+	memberToken := testSessionToken(t, s, member.ID, model.RoleMember)
+	otherMemberToken := testSessionToken(t, s, member.ID, model.RoleMember)
+	request := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		s.ServeHTTP(response, req)
+		return response
+	}
+
+	policyResponse := request(http.MethodPut, "/api/v1/admin/password-policy", adminToken, `{"minimum_length":12,"require_special":true,"require_mixed_case":true}`)
+	if policyResponse.Code != http.StatusOK {
+		t.Fatalf("update password policy returned %d: %s", policyResponse.Code, policyResponse.Body.String())
+	}
+	if response := request(http.MethodPost, "/api/v1/auth/password/change", memberToken, `{"current_password":"incorrect","new_password":"Strong-Pass!123"}`); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong current password returned %d, want 401", response.Code)
+	}
+	if response := request(http.MethodPost, "/api/v1/auth/password/change", memberToken, `{"current_password":"Member-Password!1","new_password":"short"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("weak password returned %d, want 400", response.Code)
+	}
+	if response := request(http.MethodPost, "/api/v1/auth/password/change", memberToken, `{"current_password":"Member-Password!1","new_password":"New-Member-Pass!123"}`); response.Code != http.StatusNoContent {
+		t.Fatalf("valid password change returned %d: %s", response.Code, response.Body.String())
+	}
+	updatedMember, err := model.GetUser(member.ID)
+	if err != nil || !updatedMember.VerifyPassword("New-Member-Pass!123") {
+		t.Fatalf("new password was not saved: %v", err)
+	}
+	if response := request(http.MethodGet, "/api/v1/auth/me", otherMemberToken, ""); response.Code != http.StatusUnauthorized {
+		t.Fatalf("other session after password change returned %d, want 401", response.Code)
+	}
+
+	resetBody := `{"timeframe_start":"2026-10-09T09:00:00Z","timeframe_end":"2026-10-09T10:00:00Z","reason":"Forgot password"}`
+	resetResponse := request(http.MethodPost, "/api/v1/auth/password/reset-requests", memberToken, resetBody)
+	if resetResponse.Code != http.StatusCreated {
+		t.Fatalf("create reset request returned %d: %s", resetResponse.Code, resetResponse.Body.String())
+	}
+	var reset struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(resetResponse.Body.Bytes(), &reset); err != nil {
+		t.Fatal(err)
+	}
+	requestsResponse := request(http.MethodGet, "/api/v1/admin/password-reset-requests", adminToken, "")
+	if requestsResponse.Code != http.StatusOK || !strings.Contains(requestsResponse.Body.String(), "Forgot password") {
+		t.Fatalf("admin reset request list returned %d: %s", requestsResponse.Code, requestsResponse.Body.String())
+	}
+	completePath := fmt.Sprintf("/api/v1/admin/password-reset-requests/%d/reset", reset.ID)
+	if response := request(http.MethodPost, completePath, adminToken, `{"default_password":"Temporary-Pass!123"}`); response.Code != http.StatusNoContent {
+		t.Fatalf("admin reset returned %d: %s", response.Code, response.Body.String())
+	}
+	updatedMember, err = model.GetUser(member.ID)
+	if err != nil || !updatedMember.VerifyPassword("Temporary-Pass!123") {
+		t.Fatalf("default password was not saved: %v", err)
 	}
 }
 

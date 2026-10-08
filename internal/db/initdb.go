@@ -34,7 +34,14 @@ func InitDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("cannot create app data directory: %w", err)
 	}
 
-	dbPath := filepath.Join(dir, DBName)
+	return InitDBAt(filepath.Join(dir, DBName))
+}
+
+func InitDBAt(dbPath string) (*sql.DB, error) {
+	dir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("cannot create database directory: %w", err)
+	}
 
 	conn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -57,6 +64,48 @@ func InitDB() (*sql.DB, error) {
 	}
 
 	return conn, nil
+}
+
+func CopyStarterIfMissing(starterPath, destination string) error {
+	if _, err := os.Stat(destination); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if starterPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(starterPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return fmt.Errorf("cannot create database directory: %w", err)
+	}
+	source, err := os.Open(starterPath)
+	if err != nil {
+		return fmt.Errorf("cannot open starter database: %w", err)
+	}
+	defer source.Close()
+
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot create database from starter: %w", err)
+	}
+	if _, err := io.Copy(output, source); err != nil {
+		output.Close()
+		os.Remove(destination)
+		return fmt.Errorf("cannot copy starter database: %w", err)
+	}
+	if err := output.Close(); err != nil {
+		os.Remove(destination)
+		return fmt.Errorf("cannot close starter database copy: %w", err)
+	}
+	return nil
 }
 
 // appDataDir returns a directory writable by the application.
@@ -98,6 +147,14 @@ func DatabaseExists() (bool, error) {
 // RestoreDatabase replaces the application database with a verified backup.
 // It must be called before Open so migrations run against the restored data.
 func RestoreDatabase(backupPath string) error {
+	dir, err := DataDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine app data directory: %w", err)
+	}
+	return RestoreDatabaseAt(backupPath, filepath.Join(dir, DBName))
+}
+
+func RestoreDatabaseAt(backupPath, destination string) error {
 	backupPath, err := filepath.Abs(backupPath)
 	if err != nil {
 		return fmt.Errorf("invalid backup path: %w", err)
@@ -120,15 +177,15 @@ func RestoreDatabase(backupPath string) error {
 		return fmt.Errorf("close backup database: %w", err)
 	}
 
-	dir, err := DataDir()
+	destination, err = filepath.Abs(destination)
 	if err != nil {
-		return fmt.Errorf("cannot determine app data directory: %w", err)
+		return fmt.Errorf("invalid database destination: %w", err)
 	}
+	dir := filepath.Dir(destination)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("cannot create app data directory: %w", err)
 	}
 
-	destination := filepath.Join(dir, DBName)
 	temp, err := os.CreateTemp(dir, DBName+".restore-*")
 	if err != nil {
 		return fmt.Errorf("create restore file: %w", err)

@@ -19,6 +19,14 @@
 /dist
 /wasm
 *.wasm
+*.apk
+/web/
+/artifacts/
+/data/
+*.db
+*.db-shm
+*.db-wal
+!.config.example
 
 # Go workspace file
 go.work
@@ -83,6 +91,7 @@ $RECYCLE.BIN/
 *.log
 
 # Local configuration files
+.config
 .env
 .env.*
 

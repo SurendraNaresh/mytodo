@@ -37,6 +37,12 @@ func (s *AppState) ShowDashboard() {
 			s.ShowUsers()
 		},
 	)
+	passwordSecurity := widget.NewButton("Password security", func() {
+		s.ShowPasswordAdmin()
+	})
+	if !s.Session.IsAdmin() || !api.Enabled() {
+		passwordSecurity.Hide()
+	}
 
 	layout := widget.NewButton("Canvas layout", func() {
 		s.showLayoutFrames()
@@ -233,6 +239,7 @@ func (s *AppState) ShowDashboard() {
 		widget.NewSeparator(),
 
 		admin,
+		passwordSecurity,
 		layout,
 		upload,
 		archive,

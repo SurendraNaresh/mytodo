@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/model"
 )
 
@@ -395,7 +396,7 @@ func (s *AppState) ShowCurrentUser() {
 		}
 	}
 
-	content := container.NewVBox(
+	contentItems := []fyne.CanvasObject{
 		widget.NewLabelWithStyle(
 			"Current User",
 			fyne.TextAlignLeading,
@@ -405,25 +406,95 @@ func (s *AppState) ShowCurrentUser() {
 		widget.NewSeparator(),
 
 		widget.NewLabel(
-			"Name: "+u.Name,
+			"Name: " + u.Name,
 		),
 
 		widget.NewLabel(
-			"Email: "+u.Email,
+			"Email: " + u.Email,
 		),
 
 		widget.NewLabel(
-			"DOB: "+u.DOB,
+			"DOB: " + u.DOB,
 		),
 
 		widget.NewLabel(
-			"Role: "+string(u.Role),
+			"Role: " + string(u.Role),
 		),
 
 		widget.NewLabel(
-			"Parent: "+parent,
+			"Parent: " + parent,
 		),
-	)
+	}
+	if api.Enabled() {
+		currentPassword := widget.NewPasswordEntry()
+		newPassword := widget.NewPasswordEntry()
+		confirmPassword := widget.NewPasswordEntry()
+		passwordStatus := widget.NewLabel("")
+		changePassword := widget.NewButton("Change password", func() {
+			if newPassword.Text != confirmPassword.Text {
+				passwordStatus.SetText("New passwords do not match")
+				return
+			}
+			client, err := api.Default()
+			if err == nil {
+				err = client.ChangePassword(currentPassword.Text, newPassword.Text)
+			}
+			if err != nil {
+				passwordStatus.SetText(err.Error())
+				return
+			}
+			currentPassword.SetText("")
+			newPassword.SetText("")
+			confirmPassword.SetText("")
+			passwordStatus.SetText("Password changed")
+		})
+		contentItems = append(contentItems,
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Change password", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewForm(
+				widget.NewFormItem("Current password", currentPassword),
+				widget.NewFormItem("New password", newPassword),
+				widget.NewFormItem("Confirm new password", confirmPassword),
+			),
+			changePassword,
+			passwordStatus,
+		)
+
+		startDate := widget.NewDateEntry()
+		endDate := widget.NewDateEntry()
+		reason := widget.NewMultiLineEntry()
+		reason.SetPlaceHolder("Optional note for the administrator")
+		requestStatus := widget.NewLabel("")
+		requestReset := widget.NewButton("Request password reset", func() {
+			if startDate.Date == nil || endDate.Date == nil || !endDate.Date.After(*startDate.Date) {
+				requestStatus.SetText("Choose a start and a later end date")
+				return
+			}
+			start := time.Date(startDate.Date.Year(), startDate.Date.Month(), startDate.Date.Day(), 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+			end := time.Date(endDate.Date.Year(), endDate.Date.Month(), endDate.Date.Day(), 23, 59, 0, 0, time.UTC).Format(time.RFC3339)
+			client, err := api.Default()
+			if err == nil {
+				err = client.RequestPasswordReset(start, end, reason.Text)
+			}
+			if err != nil {
+				requestStatus.SetText(err.Error())
+				return
+			}
+			requestStatus.SetText("Password reset request sent to an administrator")
+		})
+		contentItems = append(contentItems,
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Forgotten password", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewForm(
+				widget.NewFormItem("Timeframe start", startDate),
+				widget.NewFormItem("Timeframe end", endDate),
+				widget.NewFormItem("Reason", reason),
+			),
+			requestReset,
+			requestStatus,
+		)
+	}
+	content := container.NewVBox(contentItems...)
 
 	s.setMain(content)
 }

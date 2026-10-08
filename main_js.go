@@ -16,5 +16,6 @@ func main() {
 	}
 	model.UseRemoteAPI(true)
 	application := ui.NewApp()
+	application.ShowLogin()
 	application.Window.ShowAndRun()
 }

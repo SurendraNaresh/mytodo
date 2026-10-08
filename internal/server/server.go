@@ -105,6 +105,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST "+prefix+"/auth/verify", s.verifyMagicLink)
 	s.mux.HandleFunc("POST "+prefix+"/auth/logout", s.authenticated(s.logout))
 	s.mux.HandleFunc("GET "+prefix+"/auth/me", s.authenticated(s.me))
+	s.mux.HandleFunc("POST "+prefix+"/auth/password/change", s.authenticated(s.changePassword))
+	s.mux.HandleFunc("POST "+prefix+"/auth/password/reset-requests", s.authenticated(s.createPasswordResetRequest))
+	s.mux.HandleFunc("GET "+prefix+"/admin/password-policy", s.authenticated(s.getPasswordPolicy))
+	s.mux.HandleFunc("PUT "+prefix+"/admin/password-policy", s.authenticated(s.updatePasswordPolicy))
+	s.mux.HandleFunc("GET "+prefix+"/admin/password-reset-requests", s.authenticated(s.listPasswordResetRequests))
+	s.mux.HandleFunc("POST "+prefix+"/admin/password-reset-requests/{id}/reset", s.authenticated(s.resetRequestedPassword))
 	s.mux.HandleFunc("GET "+prefix+"/users", s.authenticated(s.listUsers))
 	s.mux.HandleFunc("POST "+prefix+"/auth/bootstrap", s.bootstrap)
 	s.mux.HandleFunc("POST "+prefix+"/users", s.authenticated(s.createUser))
@@ -352,6 +358,10 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateNewPassword(input.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	var parentID sql.NullInt64
 	if input.User.ParentID != nil {
 		parentID = sql.NullInt64{Int64: *input.User.ParentID, Valid: true}
@@ -386,6 +396,10 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the first account must be an administrator")
 		return
 	}
+	if err := validateNewPassword(input.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	user, err := model.CreateUser(input.User.Name, input.User.DOB, input.User.Email, model.RoleAdmin, input.Password, sql.NullInt64{})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -411,6 +425,12 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if input.Password != "" {
+		if err := validateNewPassword(input.Password); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	user, err := model.GetUser(id)
 	if err != nil {
@@ -938,12 +958,13 @@ func (s *Server) importDatabase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := db.RestoreDatabase(backupPath); err != nil {
-		_ = db.Open()
+	databasePath := db.CurrentFilename()
+	if err := db.RestoreDatabaseAt(backupPath, databasePath); err != nil {
+		_ = db.OpenAtPath(databasePath)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := db.Open(); err != nil {
+	if err := db.OpenAtPath(databasePath); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

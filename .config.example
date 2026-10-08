@@ -1,0 +1,5 @@
+PORT=9876
+DB_FILENAME=./data/mytodo.db
+Local_Data_file=local_data.db
+API_URL=http://127.0.0.1:9876/api/v1
+CORS_ORIGINS=http://192.168.1.10:9786
