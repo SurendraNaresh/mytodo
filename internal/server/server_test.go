@@ -615,6 +615,7 @@ func TestValidateEventDateAndTimes(t *testing.T) {
 		update func(*api.Event)
 	}{
 		{name: "close before open", update: func(event *api.Event) { event.ClosesAt = "2099-01-01 08:59" }},
+		{name: "close outside allowed hours", update: func(event *api.Event) { event.ClosesAt = "2099-01-01 22:15" }},
 		{name: "close at event cutoff", update: func(event *api.Event) { event.ClosesAt = "2099-01-02 23:59" }},
 		{name: "open at event cutoff", update: func(event *api.Event) { event.OpensAt = "2099-01-02 23:59" }},
 	} {
@@ -671,8 +672,9 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 	newEvent := func(title string) api.Event {
 		return api.Event{
 			Title: title, EventType: "Personal", EventClass: "Private",
-			EventDate: "2099-01-02",
-			OpensAt:   "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00",
+			InviteeIDs: []int64{otherMember.ID},
+			EventDate:  "2099-01-02",
+			OpensAt:    "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00",
 		}
 	}
 	if _, err := client.SaveEvent(api.Event{Title: "Internal", EventType: "Internal", EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err == nil {
@@ -684,6 +686,9 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 	}
 	if personal.OwnerID != member.ID || !personal.IsActive {
 		t.Fatalf("created event owner/status = %d/%t; want %d/true", personal.OwnerID, personal.IsActive, member.ID)
+	}
+	if len(personal.InviteeIDs) != 1 || personal.InviteeIDs[0] != otherMember.ID {
+		t.Fatalf("created event invitees = %v; want [%d]", personal.InviteeIDs, otherMember.ID)
 	}
 	events, err := client.Events()
 	if err != nil || len(events) != 1 || events[0].OwnerID != member.ID {
@@ -720,6 +725,9 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 	if _, _, err := client.Login(member.Email, "member-test-password"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.EventVoteSummary(personal.ID); err != nil {
+		t.Fatalf("event owner could not view vote summary: %v", err)
+	}
 	memberEvents, err := client.Events()
 	if err != nil || len(memberEvents) != 2 {
 		t.Fatalf("member event list = %#v, %v; want own private and public events", memberEvents, err)
@@ -733,19 +741,25 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherEvents, err := client.Events()
-	if err != nil || len(otherEvents) != 1 || otherEvents[0].ID != publicEvent.ID {
-		t.Fatalf("other member event list = %#v, %v; want public event only", otherEvents, err)
+	if err != nil || len(otherEvents) != 2 {
+		t.Fatalf("other member event list = %#v, %v; want invited Personal and public events", otherEvents, err)
+	}
+	if otherEvents[0].ID != publicEvent.ID && otherEvents[1].ID != publicEvent.ID {
+		t.Fatal("other member did not receive the public event")
+	}
+	if _, err := client.EventVoteSummary(personal.ID); err == nil {
+		t.Fatal("invitee viewed another user's vote summary")
 	}
 	if _, _, err := client.Login(member.Email, "member-test-password"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Updated", EventType: "Personal", EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err != nil {
+	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Updated", EventType: "Personal", InviteeIDs: []int64{otherMember.ID}, EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err != nil {
 		t.Fatalf("update own future Personal event: %v", err)
 	}
 	if _, err := db.DB().Exec(`INSERT INTO vote (voting_event_id, voter_user_id, choice) VALUES (?, ?, 'Yes')`, personal.ID, otherMember.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Locked", EventType: "Personal", EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err == nil {
+	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Locked", EventType: "Personal", InviteeIDs: []int64{otherMember.ID}, EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err == nil {
 		t.Fatal("non-admin edited a voted event")
 	}
 	if err := client.DeleteEvent(personal.ID); err == nil {

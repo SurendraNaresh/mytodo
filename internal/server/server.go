@@ -128,6 +128,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE "+prefix+"/tasks/{id}", s.authenticated(s.deleteTask))
 	s.mux.HandleFunc("GET "+prefix+"/tasks/{id}", s.authenticated(s.getTask))
 	s.mux.HandleFunc("GET "+prefix+"/events", s.authenticated(s.listEvents))
+	s.mux.HandleFunc("GET "+prefix+"/event-invitees", s.authenticated(s.listEventInvitees))
 	s.mux.HandleFunc("POST "+prefix+"/events", s.authenticated(s.createEvent))
 	s.mux.HandleFunc("PUT "+prefix+"/events/{id}", s.authenticated(s.updateEvent))
 	s.mux.HandleFunc("DELETE "+prefix+"/events/{id}", s.authenticated(s.deleteEvent))
@@ -652,8 +653,10 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT id, title, COALESCE(description, ''), event_type, event_class, event_date, opens_at, closes_at, COALESCE(owner_user_id, 0), is_active,
 		(SELECT COUNT(*) FROM vote WHERE vote.voting_event_id = voting_event.id) FROM voting_event`
-	query += ` WHERE (event_class = 'Public' AND is_active = 1) OR owner_user_id = ?`
-	args := []any{currentUser(r).ID}
+	query += ` WHERE (event_type != 'Personal' AND event_class = 'Public' AND is_active = 1) OR owner_user_id = ? OR
+		(event_type = 'Personal' AND is_active = 1 AND EXISTS (
+			SELECT 1 FROM voting_event_invitee invitee WHERE invitee.event_id = voting_event.id AND invitee.user_id = ?))`
+	args := []any{currentUser(r).ID, currentUser(r).ID}
 	query += ` ORDER BY opens_at, id`
 	rows, err := db.DB().Query(query, args...)
 	if err != nil {
@@ -668,7 +671,39 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if event.OwnerID == currentUser(r).ID {
+			event.InviteeIDs, err = eventInviteeIDs(event.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		} else if event.EventType == "Personal" {
+			event.InviteeIDs = []int64{currentUser(r).ID}
+		}
 		result = append(result, event)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) listEventInvitees(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.DB().Query(`SELECT id, name, email, role FROM users WHERE role = ? AND id != ? ORDER BY name, id`, string(model.RoleMember), currentUser(r).ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	result := make([]api.User, 0)
+	for rows.Next() {
+		var user api.User
+		if err := rows.Scan(&user.ID, &user.Name, &user.Email, &user.Role); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		result = append(result, user)
 	}
 	if err := rows.Err(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -694,6 +729,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only Personal events can be created by non-administrators")
 		return
 	}
+	if err := validateEventInvitees(event, currentUser(r).ID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	event.OwnerID = currentUser(r).ID
 	event.IsActive = true
 	result, err := db.DB().Exec(`INSERT INTO voting_event (title, description, event_type, event_class, event_date, opens_at, closes_at, owner_user_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`, strings.TrimSpace(event.Title), event.Description, event.EventType, event.EventClass, event.EventDate, event.OpensAt, event.ClosesAt, nullableEventOwner(event.OwnerID))
@@ -703,6 +742,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	event.ID, err = result.LastInsertId()
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := replaceEventInvitees(event.ID, event.InviteeIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -748,13 +791,22 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateEventInvitees(event, currentUser(r).ID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	_, err = db.DB().Exec(`UPDATE voting_event SET title = ?, description = ?, event_type = ?, event_class = ?, event_date = ?, opens_at = ?, closes_at = ? WHERE id = ?`, strings.TrimSpace(event.Title), event.Description, event.EventType, event.EventClass, event.EventDate, event.OpensAt, event.ClosesAt, eventID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := replaceEventInvitees(eventID, event.InviteeIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	event.ID = eventID
 	event.OwnerID = current.OwnerID
+	event.InviteeIDs = append([]int64(nil), event.InviteeIDs...)
 	event.IsActive = current.IsActive
 	event.VoteCount = voteCount
 	writeJSON(w, http.StatusOK, event)
@@ -821,8 +873,8 @@ func (s *Server) eventVoteSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
 	}
-	if !eventIsVisibleTo(event, currentUser(r).ID) {
-		writeError(w, http.StatusForbidden, "event is not available to this user")
+	if event.OwnerID != currentUser(r).ID {
+		writeError(w, http.StatusForbidden, "only the event owner can view vote results")
 		return
 	}
 	var summary api.VoteSummary
@@ -889,6 +941,10 @@ func (s *Server) saveVote(w http.ResponseWriter, r *http.Request) {
 	var active bool
 	if err := db.DB().QueryRow(`SELECT event_type, opens_at, closes_at, is_active FROM voting_event WHERE id = ?`, eventID).Scan(&eventType, &opensAt, &closesAt, &active); err != nil {
 		writeError(w, http.StatusNotFound, "voting event not found")
+		return
+	}
+	if eventType != "Vote" && eventType != "Personal" {
+		writeError(w, http.StatusBadRequest, "voting is available only for Vote or Personal events")
 		return
 	}
 	if !active {
@@ -1068,7 +1124,74 @@ func getEventState(id int64) (api.Event, int, error) {
 }
 
 func eventIsVisibleTo(event api.Event, userID int64) bool {
-	return event.EventClass == "Public" || event.OwnerID == userID
+	if event.EventType == "Personal" {
+		if event.OwnerID == userID {
+			return true
+		}
+		var exists bool
+		err := db.DB().QueryRow(`SELECT EXISTS(SELECT 1 FROM voting_event_invitee WHERE event_id = ? AND user_id = ?)`, event.ID, userID).Scan(&exists)
+		return err == nil && exists
+	}
+	if event.EventClass == "Public" || event.OwnerID == userID {
+		return true
+	}
+	return false
+}
+
+func eventInviteeIDs(eventID int64) ([]int64, error) {
+	rows, err := db.DB().Query(`SELECT user_id FROM voting_event_invitee WHERE event_id = ? ORDER BY user_id`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func validateEventInvitees(event api.Event, ownerID int64) error {
+	if event.EventType != "Personal" {
+		if len(event.InviteeIDs) > 0 {
+			return fmt.Errorf("only Personal events can have invitees")
+		}
+		return nil
+	}
+	if len(event.InviteeIDs) == 0 {
+		return fmt.Errorf("Personal events require at least one Member invitee")
+	}
+	seen := make(map[int64]struct{}, len(event.InviteeIDs))
+	for _, id := range event.InviteeIDs {
+		if id <= 0 || id == ownerID {
+			return fmt.Errorf("invitees must be other Member accounts")
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("duplicate event invitee")
+		}
+		seen[id] = struct{}{}
+		var role string
+		if err := db.DB().QueryRow(`SELECT role FROM users WHERE id = ?`, id).Scan(&role); err != nil || role != string(model.RoleMember) {
+			return fmt.Errorf("invitees must be Member accounts")
+		}
+	}
+	return nil
+}
+
+func replaceEventInvitees(eventID int64, inviteeIDs []int64) error {
+	if _, err := db.DB().Exec(`DELETE FROM voting_event_invitee WHERE event_id = ?`, eventID); err != nil {
+		return err
+	}
+	for _, id := range inviteeIDs {
+		if _, err := db.DB().Exec(`INSERT INTO voting_event_invitee (event_id, user_id) VALUES (?, ?)`, eventID, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func eventCurrentlyOpen(opensAt, closesAt string, now time.Time) bool {
@@ -1099,7 +1222,13 @@ func validateEvent(event api.Event) error {
 		return fmt.Errorf("opening time must be between 06:00 and 22:00")
 	}
 	closes, err := time.ParseInLocation("2006-01-02 15:04", event.ClosesAt, time.Local)
-	if err != nil || !closes.After(opens) {
+	if err != nil {
+		return fmt.Errorf("invalid closing time")
+	}
+	if !clockInRange(closes.Format("15:04"), "06:00", "22:00") {
+		return fmt.Errorf("closing time must be between 06:00 and 22:00")
+	}
+	if !closes.After(opens) {
 		return fmt.Errorf("closing time must be after opening time")
 	}
 	eventDeadline := time.Date(eventDate.Year(), eventDate.Month(), eventDate.Day(), 23, 59, 0, 0, time.Local)

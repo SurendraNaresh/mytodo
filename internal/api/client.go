@@ -61,17 +61,18 @@ type Task struct {
 }
 
 type Event struct {
-	ID          int64  `json:"id"`
-	OwnerID     int64  `json:"owner_id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	EventType   string `json:"event_type"`
-	EventClass  string `json:"event_class"`
-	EventDate   string `json:"event_date"`
-	OpensAt     string `json:"opens_at"`
-	ClosesAt    string `json:"closes_at"`
-	IsActive    bool   `json:"is_active"`
-	VoteCount   int    `json:"vote_count"`
+	ID          int64   `json:"id"`
+	OwnerID     int64   `json:"owner_id"`
+	InviteeIDs  []int64 `json:"invitee_ids,omitempty"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	EventType   string  `json:"event_type"`
+	EventClass  string  `json:"event_class"`
+	EventDate   string  `json:"event_date"`
+	OpensAt     string  `json:"opens_at"`
+	ClosesAt    string  `json:"closes_at"`
+	IsActive    bool    `json:"is_active"`
+	VoteCount   int     `json:"vote_count"`
 }
 
 type Artifact struct {
@@ -504,6 +505,12 @@ func (c *Client) DeleteTask(id int64) error {
 func (c *Client) Events() ([]Event, error) {
 	var values []Event
 	err := c.request(http.MethodGet, "/events", nil, &values)
+	return values, err
+}
+
+func (c *Client) EventInvitees() ([]User, error) {
+	var values []User
+	err := c.request(http.MethodGet, "/event-invitees", nil, &values)
 	return values, err
 }
 

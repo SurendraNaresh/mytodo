@@ -43,14 +43,19 @@ func TestVisibleVotingEvents(t *testing.T) {
 		{id: 1, ownerID: 1, eventType: "Vote", eventClass: "Public", isActive: true},
 		{id: 2, ownerID: 2, eventType: "Vote", eventClass: "Public", isActive: false},
 		{id: 3, ownerID: 1, eventType: "Personal", eventClass: "Private", isActive: true},
+		{id: 4, ownerID: 2, inviteeIDs: []int64{1}, eventType: "Personal", eventClass: "Private", isActive: true},
 	}
 	adminEvents := visibleVotingEvents(events, 1, true)
-	if len(adminEvents) != 1 || adminEvents[0].id != 1 {
-		t.Fatalf("admin events = %#v; want only active non-Personal public event", adminEvents)
+	if len(adminEvents) != 2 || adminEvents[0].id != 1 || adminEvents[1].id != 3 {
+		t.Fatalf("admin events = %#v; want active public and owned Personal events", adminEvents)
 	}
 	userEvents := visibleVotingEvents(events, 1, false)
-	if len(userEvents) != 2 || userEvents[0].id != 1 || userEvents[1].id != 3 {
-		t.Fatalf("user events = %#v; want active public and own Personal event", userEvents)
+	if len(userEvents) != 3 || userEvents[0].id != 1 || userEvents[1].id != 3 || userEvents[2].id != 4 {
+		t.Fatalf("user events = %#v; want active public, owned, and invited Personal events", userEvents)
+	}
+	inviteeEvents := visibleVotingEvents(events, 1, false)
+	if len(inviteeEvents) != 3 || inviteeEvents[2].id != 4 {
+		t.Fatalf("invitee events = %#v; want active public, owned, and invited events", inviteeEvents)
 	}
 }
 

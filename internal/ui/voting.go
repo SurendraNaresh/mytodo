@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"image/color"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +17,13 @@ import (
 	"github.com/SurendraNaresh/mytodo/internal/api"
 	"github.com/SurendraNaresh/mytodo/internal/clientdata"
 	"github.com/SurendraNaresh/mytodo/internal/db"
+	"github.com/SurendraNaresh/mytodo/internal/model"
 )
 
 type votingEventRow struct {
 	id          int64
 	ownerID     int64
+	inviteeIDs  []int64
 	voteCount   int
 	title       string
 	description string
@@ -66,13 +69,11 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	eventDate.SetPlaceHolder("YYYY-MM-DD")
 	opensDate.SetPlaceHolder("YYYY-MM-DD")
 	closesDate.SetPlaceHolder("YYYY-MM-DD")
-	opensTime := widget.NewEntry()
-	closesTime := widget.NewEntry()
-	opensTime.SetPlaceHolder("HH:MM")
-	closesTime.SetPlaceHolder("HH:MM")
+	opensTime, getOpensTime, setOpensTime := newTimeSpinner("06:00")
+	closesTime, getClosesTime, setClosesTime := newTimeSpinner("22:00")
 	eventStatus := widget.NewLabel("")
 	voteStatus := widget.NewLabel("")
-	choice := widget.NewRadioGroup([]string{"Yes", "No", "Abstain"}, nil)
+	selectedChoice := ""
 	comments := widget.NewMultiLineEntry()
 	comments.SetPlaceHolder("Required when abstaining")
 	currentChoice := widget.NewLabel("Current choice: N/A")
@@ -91,10 +92,123 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	var eventEditorTitle *widget.Label
 	var rightPanel *fyne.Container
 	var eventEditor *fyne.Container
+	var inviteeFields *fyne.Container
 	var editingEventID int64
+	var yesButton, noButton, abstainButton *widget.Button
+	var availableInvitees []api.User
+	selectedInvitees := make([]int64, 0)
+	inviteeNames := make(map[int64]string)
+	inviteeLabels := make(map[string]int64)
+	inviteeCount := widget.NewSelect([]string{"0"}, nil)
+	inviteeCount.SetSelected("0")
+	inviteeSelect := widget.NewSelect(nil, nil)
+	inviteeStatus := widget.NewLabel("")
+	selectedInviteeList := container.NewVBox()
+
+	var inviteeLoadErr error
+	if api.Enabled() {
+		client, err := api.Default()
+		if err == nil {
+			availableInvitees, inviteeLoadErr = client.EventInvitees()
+		} else {
+			inviteeLoadErr = err
+		}
+	} else {
+		rows, err := db.DB().Query(`SELECT id, name, email, role FROM users WHERE role = ? AND id != ? ORDER BY name, id`, string(model.RoleMember), s.Session.User.ID)
+		if err != nil {
+			inviteeLoadErr = err
+		} else {
+			for rows.Next() {
+				var user api.User
+				if err := rows.Scan(&user.ID, &user.Name, &user.Email, &user.Role); err != nil {
+					inviteeLoadErr = err
+					break
+				}
+				availableInvitees = append(availableInvitees, user)
+			}
+			if err := rows.Err(); err != nil {
+				inviteeLoadErr = err
+			}
+			if err := rows.Close(); err != nil && inviteeLoadErr == nil {
+				inviteeLoadErr = err
+			}
+		}
+	}
+	countOptions := []string{"0"}
+	for index, user := range availableInvitees {
+		label := fmt.Sprintf("%s [%d]", user.Name, user.ID)
+		inviteeNames[user.ID] = label
+		inviteeLabels[label] = user.ID
+		countOptions = append(countOptions, fmt.Sprint(index+1))
+	}
+	inviteeCount.Options = countOptions
+	if inviteeLoadErr != nil {
+		inviteeStatus.SetText("Could not load invitees: " + inviteeLoadErr.Error())
+	}
+	var refreshInviteeOptions func()
+	refreshInviteeOptions = func() {
+		options := make([]string, 0, len(availableInvitees))
+		for _, user := range availableInvitees {
+			alreadySelected := false
+			for _, id := range selectedInvitees {
+				if id == user.ID {
+					alreadySelected = true
+					break
+				}
+			}
+			if !alreadySelected {
+				options = append(options, inviteeNames[user.ID])
+			}
+		}
+		inviteeSelect.Options = options
+		inviteeSelect.SetSelected("")
+		selectedInviteeList.RemoveAll()
+		for _, id := range selectedInvitees {
+			userID := id
+			removeButton := widget.NewButton("Remove "+inviteeNames[id], func() {
+				for index, selectedID := range selectedInvitees {
+					if selectedID == userID {
+						selectedInvitees = append(selectedInvitees[:index], selectedInvitees[index+1:]...)
+						break
+					}
+				}
+				refreshInviteeOptions()
+			})
+			selectedInviteeList.Add(removeButton)
+		}
+		count, _ := strconv.Atoi(inviteeCount.Selected)
+		if len(selectedInvitees) >= count || len(options) == 0 {
+			inviteeSelect.Disable()
+		} else {
+			inviteeSelect.Enable()
+		}
+		selectedInviteeList.Refresh()
+	}
+	refreshInviteeOptions()
+	inviteeCount.OnChanged = func(string) { refreshInviteeOptions() }
+	inviteeSelect.OnChanged = func(label string) {
+		if id, ok := inviteeLabels[label]; ok && len(selectedInvitees) < len(availableInvitees) {
+			selectedInvitees = append(selectedInvitees, id)
+			refreshInviteeOptions()
+		}
+	}
+	updateSelectedInvitees := func(ids []int64) {
+		selectedInvitees = append(selectedInvitees[:0], ids...)
+		inviteeCount.SetSelected(fmt.Sprint(len(selectedInvitees)))
+		refreshInviteeOptions()
+	}
+
+	var updateChoice func(string)
+	yesButton = widget.NewButton("Yes", func() { updateChoice("Yes") })
+	yesButton.Importance = widget.SuccessImportance
+	noButton = widget.NewButton("No", func() { updateChoice("No") })
+	noButton.Importance = widget.DangerImportance
+	abstainButton = widget.NewButton("Abstain", func() { updateChoice("Abstain") })
+	abstainButton.Importance = widget.HighImportance
+	updateChoice = func(value string) { selectedChoice = value }
+	choiceButtons := container.NewGridWithColumns(3, yesButton, noButton, abstainButton)
 
 	if admin {
-		choice.Disable()
 		comments.Disable()
 		currentChoice.SetText("Current choice: N/A (admin)")
 	}
@@ -103,7 +217,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		widget.NewLabelWithStyle("Your vote", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		currentChoice,
 		widget.NewForm(
-			widget.NewFormItem("Choice", choice),
+			widget.NewFormItem("Choice", choiceButtons),
 			widget.NewFormItem("Comments", comments),
 		),
 	)
@@ -151,7 +265,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 				voteStatus.SetText(err.Error())
 				return
 			}
-			choice.SetSelected(saved.Choice)
+			updateChoice(saved.Choice)
 			comments.SetText(saved.Comments)
 			if admin {
 				currentChoice.SetText("Current choice: N/A (admin)")
@@ -175,12 +289,12 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		).Scan(&savedChoice, &savedComments)
 		switch err {
 		case nil:
-			choice.SetSelected(savedChoice)
+			updateChoice(savedChoice)
 			comments.SetText(savedComments)
 			currentChoice.SetText("Current choice: " + savedChoice)
 			voteStatus.SetText("Your vote is saved. You can update it here.")
 		case sql.ErrNoRows:
-			choice.SetSelected("")
+			updateChoice("")
 			comments.SetText("")
 			currentChoice.SetText("Current choice: N/A")
 			voteStatus.SetText("No vote submitted for this event yet.")
@@ -251,27 +365,39 @@ func (s *AppState) votingView() fyne.CanvasObject {
 				deactivateButton.Disable()
 			}
 		}
-		if event.eventType == "Vote" {
+		if event.eventType == "Vote" || event.eventType == "Personal" {
 			eventInfo.Hide()
 			votePanel.Show()
-			choice.Enable()
-			comments.Enable()
-			if admin {
-				choice.Disable()
+			canVote := !admin && (event.eventType == "Vote" || event.eventType == "Personal" && containsInvitee(event.inviteeIDs, s.Session.User.ID))
+			if canVote {
+				yesButton.Enable()
+				noButton.Enable()
+				abstainButton.Enable()
+				comments.Enable()
+			} else {
+				yesButton.Disable()
+				noButton.Disable()
+				abstainButton.Disable()
 				comments.Disable()
-				currentChoice.SetText("Current choice: N/A (admin)")
 			}
-			if event.isActive && eventIsActive(event, time.Now()) && !admin {
+			if event.isActive && eventIsActive(event, time.Now()) && canVote {
 				saveVoteButton.Enable()
 			} else {
 				saveVoteButton.Disable()
 			}
 			if admin {
 				currentChoice.SetText("Current choice: N/A (admin)")
-			} else {
+			} else if canVote {
 				loadUserVote()
+			} else {
+				currentChoice.SetText("Current choice: N/A")
 			}
-			loadVoteSummary()
+			if event.ownerID == s.Session.User.ID {
+				resultsPanel.Show()
+				loadVoteSummary()
+			} else {
+				resultsPanel.Hide()
+			}
 		} else {
 			votePanel.Hide()
 			eventInfo.SetText(fmt.Sprintf("%s\n%s\nType: %s\nClass: %s\nEvent date: %s\nOpens: %s\nCloses: %s\nStatus: %s", event.title, event.description, eventTypeText(event.eventType), event.eventClass, event.eventDate, event.opensAt, event.closesAt, eventStatusText(event)))
@@ -291,20 +417,24 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			voteStatus.SetText("Select an event first")
 			return
 		}
-		if admin || selectedEvent == nil || selectedEvent.eventType != "Vote" {
+		if admin || selectedEvent == nil || selectedEvent.eventType != "Vote" && selectedEvent.eventType != "Personal" {
 			voteStatus.SetText("Voting is available only for Vote events")
+			return
+		}
+		if selectedEvent.eventType == "Personal" && !containsInvitee(selectedEvent.inviteeIDs, s.Session.User.ID) {
+			voteStatus.SetText("Only invited Members can vote in this Personal event")
 			return
 		}
 		if !selectedEvent.isActive || !eventIsActive(*selectedEvent, time.Now()) {
 			voteStatus.SetText("Voting is available only while the event is open")
 			return
 		}
-		if choice.Selected != "Yes" && choice.Selected != "No" && choice.Selected != "Abstain" {
+		if selectedChoice != "Yes" && selectedChoice != "No" && selectedChoice != "Abstain" {
 			voteStatus.SetText("Choose Yes, No, or Abstain")
 			return
 		}
 		comment := strings.TrimSpace(comments.Text)
-		if choice.Selected == "Abstain" && comment == "" {
+		if selectedChoice == "Abstain" && comment == "" {
 			voteStatus.SetText("Comments are required when abstaining")
 			return
 		}
@@ -315,14 +445,14 @@ func (s *AppState) votingView() fyne.CanvasObject {
 				voteStatus.SetText(clientErr.Error())
 				return
 			}
-			err = client.SaveVote(selectedEventID, api.Vote{Choice: choice.Selected, Comments: comment})
+			err = client.SaveVote(selectedEventID, api.Vote{Choice: selectedChoice, Comments: comment})
 		} else {
 			_, err = db.DB().Exec(`
 			INSERT INTO vote (voting_event_id, voter_user_id, choice, comments)
 			VALUES (?, ?, ?, ?)
 			ON CONFLICT (voting_event_id, voter_user_id)
 			DO UPDATE SET choice = excluded.choice, comments = excluded.comments`,
-				selectedEventID, s.Session.User.ID, choice.Selected, comment,
+				selectedEventID, s.Session.User.ID, selectedChoice, comment,
 			)
 		}
 		if err != nil {
@@ -330,8 +460,10 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			return
 		}
 		voteStatus.SetText("Vote saved")
-		currentChoice.SetText("Current choice: " + choice.Selected)
-		loadVoteSummary()
+		currentChoice.SetText("Current choice: " + selectedChoice)
+		if selectedEvent.ownerID == s.Session.User.ID {
+			loadVoteSummary()
+		}
 	})
 	votePanel.Add(saveVoteButton)
 	votePanel.Add(voteStatus)
@@ -380,7 +512,8 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			for _, event := range remoteEvents {
 				loadedEvents = append(loadedEvents, votingEventRow{
 					id: event.ID, title: event.Title, description: event.Description,
-					ownerID: event.OwnerID, voteCount: event.VoteCount, isActive: event.IsActive,
+					inviteeIDs: event.InviteeIDs,
+					ownerID:    event.OwnerID, voteCount: event.VoteCount, isActive: event.IsActive,
 					eventType: event.EventType, eventClass: event.EventClass, eventDate: event.EventDate, opensAt: event.OpensAt, closesAt: event.ClosesAt,
 				})
 			}
@@ -400,6 +533,16 @@ func (s *AppState) votingView() fyne.CanvasObject {
 					rows.Close()
 					eventFilterStatus.SetText(err.Error())
 					return
+				}
+				if event.ownerID == s.Session.User.ID {
+					event.inviteeIDs, err = eventInviteeIDs(event.id)
+					if err != nil {
+						rows.Close()
+						eventFilterStatus.SetText(err.Error())
+						return
+					}
+				} else if event.eventType == "Personal" {
+					event.inviteeIDs = []int64{s.Session.User.ID}
 				}
 				loadedEvents = append(loadedEvents, event)
 			}
@@ -441,13 +584,15 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		opensDate.SetDate(nil)
 		closesDate.SetDate(nil)
 		eventDate.SetDate(nil)
-		opensTime.SetText("")
-		closesTime.SetText("")
+		setOpensTime("06:00")
+		setClosesTime("22:00")
+		updateSelectedInvitees(nil)
 	}
 
 	fillEditor := func(event votingEventRow) {
 		title.SetText(event.title)
 		description.SetText(event.description)
+		updateSelectedInvitees(event.inviteeIDs)
 		eventType.SetSelected(event.eventType)
 		eventClass.SetSelected(event.eventClass)
 		if selectedDate, err := time.Parse("2006-01-02", event.eventDate); err == nil {
@@ -455,11 +600,11 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		}
 		if opened, err := time.Parse("2006-01-02 15:04", event.opensAt); err == nil {
 			opensDate.SetDate(&opened)
-			opensTime.SetText(opened.Format("15:04"))
+			setOpensTime(opened.Format("15:04"))
 		}
 		if closed, err := time.Parse("2006-01-02 15:04", event.closesAt); err == nil {
 			closesDate.SetDate(&closed)
-			closesTime.SetText(closed.Format("15:04"))
+			setClosesTime(closed.Format("15:04"))
 		}
 	}
 
@@ -496,16 +641,30 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			eventStatus.SetText("Choose a valid event type")
 			return
 		}
-		if !clockInRange(opensTime.Text, "06:00", "22:00") {
+		if eventType.Selected == "Personal" {
+			count, _ := strconv.Atoi(inviteeCount.Selected)
+			if count < 1 || len(selectedInvitees) != count {
+				eventStatus.SetText("Choose an invitee count and select exactly that many Members")
+				return
+			}
+		}
+		if eventType.Selected == "Personal" {
+			count, _ := strconv.Atoi(inviteeCount.Selected)
+			if count <= 0 || len(selectedInvitees) != count {
+				eventStatus.SetText("Choose an invitee count and select exactly that many Members")
+				return
+			}
+		}
+		if !clockInRange(getOpensTime(), "06:00", "22:00") {
 			eventStatus.SetText("Opening time must be between 06:00 and 22:00")
 			return
 		}
-		if _, err := time.Parse("15:04", strings.TrimSpace(closesTime.Text)); err != nil {
-			eventStatus.SetText("Closing time must use 24-hour HH:MM format")
+		if !clockInRange(getClosesTime(), "06:00", "22:00") {
+			eventStatus.SetText("Closing time must be between 06:00 and 22:00")
 			return
 		}
-		opensAt := opensDate.Date.Format("2006-01-02") + " " + strings.TrimSpace(opensTime.Text)
-		closesAt := closesDate.Date.Format("2006-01-02") + " " + strings.TrimSpace(closesTime.Text)
+		opensAt := opensDate.Date.Format("2006-01-02") + " " + getOpensTime()
+		closesAt := closesDate.Date.Format("2006-01-02") + " " + getClosesTime()
 		opens, _ := time.ParseInLocation("2006-01-02 15:04", opensAt, time.Local)
 		closes, _ := time.ParseInLocation("2006-01-02 15:04", closesAt, time.Local)
 		deadline := time.Date(eventDate.Date.Year(), eventDate.Date.Month(), eventDate.Date.Day(), 23, 59, 0, 0, time.Local)
@@ -527,7 +686,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			}
 			saved, saveErr := client.SaveEvent(api.Event{
 				ID: editingEventID, Title: strings.TrimSpace(title.Text), Description: strings.TrimSpace(description.Text),
-				OwnerID: s.Session.User.ID, EventType: eventType.Selected, EventClass: eventClass.Selected, EventDate: eventDate.Date.Format("2006-01-02"), OpensAt: opensAt, ClosesAt: closesAt, IsActive: true,
+				OwnerID: s.Session.User.ID, InviteeIDs: append([]int64(nil), selectedInvitees...), EventType: eventType.Selected, EventClass: eventClass.Selected, EventDate: eventDate.Date.Format("2006-01-02"), OpensAt: opensAt, ClosesAt: closesAt, IsActive: true,
 			})
 			err = saveErr
 			savedEventID = saved.ID
@@ -543,6 +702,18 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		if err != nil {
 			eventStatus.SetText(err.Error())
 			return
+		}
+		if !api.Enabled() {
+			if _, err := db.DB().Exec(`DELETE FROM voting_event_invitee WHERE event_id = ?`, savedEventID); err != nil {
+				eventStatus.SetText(err.Error())
+				return
+			}
+			for _, inviteeID := range selectedInvitees {
+				if _, err := db.DB().Exec(`INSERT INTO voting_event_invitee (event_id, user_id) VALUES (?, ?)`, savedEventID, inviteeID); err != nil {
+					eventStatus.SetText(err.Error())
+					return
+				}
+			}
 		}
 		selectedEventID = savedEventID
 		editingEventID = 0
@@ -676,6 +847,14 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		} else {
 			eventTypeCaption.SetText("Event type")
 		}
+		if inviteeFields != nil {
+			if value == "Personal" {
+				inviteeFields.Show()
+			} else {
+				inviteeFields.Hide()
+			}
+			inviteeFields.Refresh()
+		}
 	}
 	title.OnChanged = func(value string) {
 		if strings.TrimSpace(value) != "" || editingEventID != 0 {
@@ -699,9 +878,22 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			container.NewVBox(widget.NewLabel("Time"), closesTime),
 		)),
 	)
+	inviteeFields = container.NewVBox(
+		widget.NewLabelWithStyle("Invitees who can vote", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewForm(
+			widget.NewFormItem("Number of invitees", inviteeCount),
+			widget.NewFormItem("Add Member", inviteeSelect),
+		),
+		selectedInviteeList,
+		inviteeStatus,
+	)
+	if eventType.Selected != "Personal" {
+		inviteeFields.Hide()
+	}
 	eventFields := container.NewVBox(
 		container.NewVBox(eventTypeCaption, eventType),
 		container.NewVBox(widget.NewLabelWithStyle("Event class", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), eventClass),
+		inviteeFields,
 		form,
 	)
 	eventEditor = container.NewBorder(
@@ -741,6 +933,68 @@ func clockInRange(value, minimum, maximum string) bool {
 	return minErr == nil && maxErr == nil && !parsed.Before(min) && !parsed.After(max)
 }
 
+func newTimeSpinner(initial string) (fyne.CanvasObject, func() string, func(string)) {
+	const minimum = 6 * 60
+	const maximum = 22 * 60
+	const step = 15
+	minutes := minimum
+	if parsed, err := time.Parse("15:04", initial); err == nil {
+		minutes = parsed.Hour()*60 + parsed.Minute()
+	}
+	if minutes < minimum {
+		minutes = minimum
+	}
+	if minutes > maximum {
+		minutes = maximum
+	}
+	value := widget.NewLabel("")
+	var decrement, increment *widget.Button
+	refresh := func() {
+		value.SetText(fmt.Sprintf("%02d:%02d", minutes/60, minutes%60))
+		if minutes <= minimum {
+			decrement.Disable()
+		} else {
+			decrement.Enable()
+		}
+		if minutes >= maximum {
+			increment.Disable()
+		} else {
+			increment.Enable()
+		}
+	}
+	decrement = widget.NewButton("-", func() {
+		minutes -= step
+		if minutes < minimum {
+			minutes = minimum
+		}
+		refresh()
+	})
+	increment = widget.NewButton("+", func() {
+		minutes += step
+		if minutes > maximum {
+			minutes = maximum
+		}
+		refresh()
+	})
+	refresh()
+	set := func(text string) {
+		parsed, err := time.Parse("15:04", strings.TrimSpace(text))
+		if err != nil {
+			return
+		}
+		minutes = parsed.Hour()*60 + parsed.Minute()
+		if minutes < minimum {
+			minutes = minimum
+		}
+		if minutes > maximum {
+			minutes = maximum
+		}
+		refresh()
+	}
+	get := func() string { return value.Text }
+	return container.NewHBox(decrement, value, increment), get, set
+}
+
 func eventIsActive(event votingEventRow, now time.Time) bool {
 	opens, opensErr := time.ParseInLocation("2006-01-02 15:04", event.opensAt, time.Local)
 	closes, closesErr := time.ParseInLocation("2006-01-02 15:04", event.closesAt, time.Local)
@@ -760,18 +1014,47 @@ func eventStatusText(event votingEventRow) string {
 func visibleVotingEvents(events []votingEventRow, userID int64, admin bool) []votingEventRow {
 	visible := make([]votingEventRow, 0, len(events))
 	for _, event := range events {
-		if admin && event.eventType == "Personal" {
+		if admin && event.eventType == "Personal" && event.ownerID != userID {
+			continue
+		}
+		if event.eventType == "Personal" && event.ownerID != userID && !containsInvitee(event.inviteeIDs, userID) {
 			continue
 		}
 		if !event.isActive && event.ownerID != userID {
 			continue
 		}
-		if event.eventClass == "Private" && event.ownerID != userID {
+		if event.eventType != "Personal" && event.eventClass == "Private" && event.ownerID != userID {
 			continue
 		}
 		visible = append(visible, event)
 	}
 	return visible
+}
+
+func containsInvitee(inviteeIDs []int64, userID int64) bool {
+	for _, inviteeID := range inviteeIDs {
+		if inviteeID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func eventInviteeIDs(eventID int64) ([]int64, error) {
+	rows, err := db.DB().Query(`SELECT user_id FROM voting_event_invitee WHERE event_id = ? ORDER BY user_id`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func eventTypeText(eventType string) string {

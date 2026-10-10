@@ -181,6 +181,14 @@ func migrate() error {
 
 	CREATE INDEX IF NOT EXISTS ix_vote_parent ON vote(voting_event_id);
 
+	CREATE TABLE IF NOT EXISTS voting_event_invitee (
+		event_id INTEGER NOT NULL REFERENCES voting_event(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		PRIMARY KEY (event_id, user_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS ix_voting_event_invitee_user ON voting_event_invitee(user_id, event_id);
+
 	CREATE TABLE IF NOT EXISTS artifacts (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		event_id INTEGER NOT NULL REFERENCES voting_event(id) ON DELETE CASCADE,

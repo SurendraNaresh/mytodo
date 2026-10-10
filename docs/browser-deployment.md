@@ -78,7 +78,7 @@ target. Do not pass Go build flags such as `-p 8` to `--tags`:
 
 ```powershell
 Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
-fyne package --target android/arm64 --source-dir . --release --app-id com.mytodo.desktop
+    fyne package --target android/arm64 --source-dir . --release --app-id com.mytodo.desktop
 ```
 
 The Android app stores client data in its private Fyne storage directory. On
