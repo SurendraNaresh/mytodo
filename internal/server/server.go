@@ -818,18 +818,18 @@ func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	event, voteCount, err := getEventState(id)
+	event, _, err := getEventState(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
 	}
 	if !isAdmin(r) {
-		if event.EventType != "Personal" || event.OwnerID != currentUser(r).ID {
-			writeError(w, http.StatusForbidden, "event does not belong to this user")
+		if event.OwnerID != currentUser(r).ID {
+			writeError(w, http.StatusForbidden, "only the event owner can delete this event")
 			return
 		}
-		if !event.IsActive || voteCount > 0 || eventCurrentlyOpen(event.OpensAt, event.ClosesAt, time.Now()) {
-			writeError(w, http.StatusForbidden, "only administrators can delete deactivated, voted, or currently open events")
+		if !eventOwnerMayDelete(event, currentUser(r).ID, time.Now()) {
+			writeError(w, http.StatusForbidden, "event owners can delete events only after one day past the event date")
 			return
 		}
 	}
@@ -905,6 +905,10 @@ func (s *Server) getVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "event is private")
 		return
 	}
+	if event.EventType == "Personal" && !eventIsInvitee(event.ID, currentUser(r).ID) {
+		writeError(w, http.StatusForbidden, "only invited Members can vote in this Personal event")
+		return
+	}
 	var vote api.Vote
 	err = db.DB().QueryRow(`SELECT choice, COALESCE(comments, '') FROM vote WHERE voting_event_id = ? AND voter_user_id = ?`, eventID, currentUser(r).ID).Scan(&vote.Choice, &vote.Comments)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -935,6 +939,10 @@ func (s *Server) saveVote(w http.ResponseWriter, r *http.Request) {
 	}
 	if !eventIsVisibleTo(event, currentUser(r).ID) {
 		writeError(w, http.StatusForbidden, "event is private")
+		return
+	}
+	if event.EventType == "Personal" && !eventIsInvitee(event.ID, currentUser(r).ID) {
+		writeError(w, http.StatusForbidden, "only invited Members can vote in this Personal event")
 		return
 	}
 	var eventType, opensAt, closesAt string
@@ -1111,8 +1119,8 @@ func nullableEventOwner(ownerID int64) any {
 func getEventState(id int64) (api.Event, int, error) {
 	var event api.Event
 	var voteCount int
-	err := db.DB().QueryRow(`SELECT id, title, COALESCE(description, ''), event_type, event_class, opens_at, closes_at, COALESCE(owner_user_id, 0), is_active
-		FROM voting_event WHERE id = ?`, id).Scan(&event.ID, &event.Title, &event.Description, &event.EventType, &event.EventClass, &event.OpensAt, &event.ClosesAt, &event.OwnerID, &event.IsActive)
+	err := db.DB().QueryRow(`SELECT id, title, COALESCE(description, ''), event_type, event_class, event_date, opens_at, closes_at, COALESCE(owner_user_id, 0), is_active
+		FROM voting_event WHERE id = ?`, id).Scan(&event.ID, &event.Title, &event.Description, &event.EventType, &event.EventClass, &event.EventDate, &event.OpensAt, &event.ClosesAt, &event.OwnerID, &event.IsActive)
 	if err != nil {
 		return api.Event{}, 0, err
 	}
@@ -1136,6 +1144,20 @@ func eventIsVisibleTo(event api.Event, userID int64) bool {
 		return true
 	}
 	return false
+}
+
+func eventIsInvitee(eventID, userID int64) bool {
+	var exists bool
+	err := db.DB().QueryRow(`SELECT EXISTS(SELECT 1 FROM voting_event_invitee WHERE event_id = ? AND user_id = ?)`, eventID, userID).Scan(&exists)
+	return err == nil && exists
+}
+
+func eventOwnerMayDelete(event api.Event, userID int64, now time.Time) bool {
+	if event.OwnerID != userID {
+		return false
+	}
+	eventDate, err := time.ParseInLocation("2006-01-02", event.EventDate, time.Local)
+	return err == nil && !now.Before(eventDate.AddDate(0, 0, 1))
 }
 
 func eventInviteeIDs(eventID int64) ([]int64, error) {
@@ -1239,8 +1261,8 @@ func validateEvent(event api.Event) error {
 }
 
 func votingOpen(event api.Event, now time.Time) error {
-	if event.EventType != "Vote" || !event.IsActive {
-		return fmt.Errorf("voting is available only for Vote events")
+	if event.EventType != "Vote" && event.EventType != "Personal" || !event.IsActive {
+		return fmt.Errorf("voting is available only for active Vote or Personal events")
 	}
 	opens, openErr := time.ParseInLocation("2006-01-02 15:04", event.OpensAt, time.Local)
 	closes, closeErr := time.ParseInLocation("2006-01-02 15:04", event.ClosesAt, time.Local)

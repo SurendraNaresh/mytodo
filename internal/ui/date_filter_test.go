@@ -59,6 +59,26 @@ func TestVisibleVotingEvents(t *testing.T) {
 	}
 }
 
+func TestEventCanReceiveVotes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		event votingEventRow
+		want  bool
+	}{
+		{name: "active Vote event", event: votingEventRow{eventType: "Vote", isActive: true}, want: true},
+		{name: "active Personal event with invitees", event: votingEventRow{eventType: "Personal", inviteeIDs: []int64{2}, isActive: true}, want: true},
+		{name: "Personal event without invitees", event: votingEventRow{eventType: "Personal", isActive: true}, want: false},
+		{name: "deactivated Vote event", event: votingEventRow{eventType: "Vote", isActive: false}, want: false},
+		{name: "non-voting event", event: votingEventRow{eventType: "Internal", isActive: true}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := eventCanReceiveVotes(test.event); got != test.want {
+				t.Errorf("eventCanReceiveVotes() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestEventOverlapsDateRange(t *testing.T) {
 	from := testDate(2026, time.September, 10)
 	to := testDate(2026, time.September, 20)

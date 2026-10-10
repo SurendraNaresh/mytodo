@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"image/color"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	var selectedEvent *votingEventRow
 	displayedEvents := make([]votingEventRow, 0)
 	var eventList *widget.List
+	var eventSearch *widget.Entry
 	var editButton *widget.Button
 	var deleteButton *widget.Button
 	var deactivateButton *widget.Button
@@ -95,6 +97,10 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	var inviteeFields *fyne.Container
 	var editingEventID int64
 	var yesButton, noButton, abstainButton *widget.Button
+	var yesBorder, noBorder, abstainBorder *canvas.Rectangle
+	var previewCard *widget.Card
+	var showEventPreview func(votingEventRow)
+	allEvents := make([]votingEventRow, 0)
 	var availableInvitees []api.User
 	selectedInvitees := make([]int64, 0)
 	inviteeNames := make(map[int64]string)
@@ -205,8 +211,39 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	noButton.Importance = widget.DangerImportance
 	abstainButton = widget.NewButton("Abstain", func() { updateChoice("Abstain") })
 	abstainButton.Importance = widget.HighImportance
-	updateChoice = func(value string) { selectedChoice = value }
-	choiceButtons := container.NewGridWithColumns(3, yesButton, noButton, abstainButton)
+	yesBorder = newChoiceBorder()
+	noBorder = newChoiceBorder()
+	abstainBorder = newChoiceBorder()
+	updateChoice = func(value string) {
+		selectedChoice = value
+		for _, border := range []*canvas.Rectangle{yesBorder, noBorder, abstainBorder} {
+			border.Hide()
+		}
+		for _, button := range []*widget.Button{yesButton, noButton, abstainButton} {
+			button.SetText(strings.Trim(button.Text, "[]"))
+		}
+		yesButton.Importance = widget.SuccessImportance
+		noButton.Importance = widget.DangerImportance
+		abstainButton.Importance = widget.HighImportance
+		if value == "Yes" {
+			yesBorder.Show()
+			yesButton.SetText("[Yes]")
+			yesButton.Importance = widget.HighImportance
+		} else if value == "No" {
+			noBorder.Show()
+			noButton.SetText("[No]")
+			noButton.Importance = widget.HighImportance
+		} else if value == "Abstain" {
+			abstainBorder.Show()
+			abstainButton.SetText("[Abstain]")
+			abstainButton.Importance = widget.HighImportance
+		}
+	}
+	choiceButtons := container.NewGridWithColumns(3,
+		container.NewStack(yesBorder, container.NewPadded(yesButton)),
+		container.NewStack(noBorder, container.NewPadded(noButton)),
+		container.NewStack(abstainBorder, container.NewPadded(abstainButton)),
+	)
 
 	if admin {
 		comments.Disable()
@@ -233,12 +270,17 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	eventInfo.Wrapping = fyne.TextWrapWord
 	eventInfo.Hide()
 	eventFilterStatus := widget.NewLabel("")
+	eventSearch = widget.NewEntry()
+	eventSearch.SetPlaceHolder("Search events")
 
 	showPrompt := func() {
 		selectedEventID = 0
 		selectedEvent = nil
 		votePanel.Hide()
 		eventInfo.Hide()
+		if previewCard != nil {
+			previewCard.Hide()
+		}
 		if eventEditor != nil {
 			eventEditor.Hide()
 		}
@@ -342,6 +384,9 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	showSelectedEvent := func(event votingEventRow) {
 		selectedEvent = &event
 		selectedEventID = event.id
+		if previewCard != nil {
+			previewCard.Hide()
+		}
 		prompt.Hide()
 		if eventEditor != nil {
 			eventEditor.Hide()
@@ -354,7 +399,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			} else {
 				editButton.Disable()
 			}
-			if admin || ownsPersonal && event.isActive && !locked {
+			if admin || ownsPersonal && eventOwnerMayDelete(event, s.Session.User.ID, time.Now()) {
 				deleteButton.Enable()
 			} else {
 				deleteButton.Disable()
@@ -392,7 +437,7 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			} else {
 				currentChoice.SetText("Current choice: N/A")
 			}
-			if event.ownerID == s.Session.User.ID {
+			if event.ownerID == s.Session.User.ID && eventCanReceiveVotes(event) && eventIsActive(event, time.Now()) {
 				resultsPanel.Show()
 				loadVoteSummary()
 			} else {
@@ -406,6 +451,21 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		if rightPanel != nil {
 			rightPanel.Refresh()
 		}
+	}
+	showEventPreview = func(event votingEventRow) {
+		showSelectedEvent(event)
+		votePanel.Hide()
+		eventInfo.Hide()
+		owner := fmt.Sprintf("Owner #%d", event.ownerID)
+		if event.ownerID == s.Session.User.ID {
+			owner = "Owner: you"
+		}
+		previewCard = widget.NewCard(event.title,
+			fmt.Sprintf("%s | %s | %s | %s", eventTypeText(event.eventType), eventStatusText(event), event.eventClass, owner),
+			widget.NewLabel(fmt.Sprintf("%s\nEvent date: %s\nOpens: %s\nCloses: %s", event.description, event.eventDate, event.opensAt, event.closesAt)))
+		rightPanel.Objects[3] = previewCard
+		previewCard.Show()
+		rightPanel.Refresh()
 	}
 
 	saveVoteButton = widget.NewButton("Save vote", func() {
@@ -469,23 +529,31 @@ func (s *AppState) votingView() fyne.CanvasObject {
 	votePanel.Add(voteStatus)
 	votePanel.Add(resultsPanel)
 
+	previewCard = widget.NewCard("", "", widget.NewLabel(""))
+	previewCard.Hide()
 	eventList = widget.NewList(
 		func() int { return len(displayedEvents) },
 		func() fyne.CanvasObject {
-			return container.NewVBox(widget.NewLabel(""), widget.NewLabel(""), canvas.NewText("", color.NRGBA{R: 196, G: 34, B: 34, A: 255}))
+			label := widget.NewLabel("")
+			label.Wrapping = fyne.TextWrapOff
+			preview := widget.NewButton("Preview", nil)
+			return container.NewBorder(nil, nil, nil, preview, label)
 		},
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			event := displayedEvents[int(id)]
 			row := object.(*fyne.Container)
-			row.Objects[0].(*widget.Label).SetText(event.title)
-			row.Objects[1].(*widget.Label).SetText(fmt.Sprintf("%s | %s | %s", eventTypeText(event.eventType), event.eventClass, eventStatusText(event)))
-			reminder := row.Objects[2].(*canvas.Text)
-			if event.isActive && eventIsActive(event, time.Now()) {
-				reminder.Text = "ACTIVE - closes " + event.closesAt
-			} else {
-				reminder.Text = ""
+			label := row.Objects[0].(*widget.Label)
+			owner := fmt.Sprintf("Owner #%d", event.ownerID)
+			if event.ownerID == s.Session.User.ID {
+				owner = "Owner: you"
 			}
-			reminder.Refresh()
+			label.SetText(fmt.Sprintf("%s | %s | %s | %s", event.title, eventStatusText(event), owner, shortEventDescription(event.description, 36)))
+			preview := row.Objects[1].(*widget.Button)
+			preview.OnTapped = func() {
+				if showEventPreview != nil {
+					showEventPreview(event)
+				}
+			}
 		},
 	)
 	eventList.OnSelected = func(id widget.ListItemID) {
@@ -494,6 +562,23 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		}
 		showSelectedEvent(displayedEvents[int(id)])
 	}
+	applyEventFilter := func() {
+		query := strings.ToLower(strings.TrimSpace(eventSearch.Text))
+		displayedEvents = displayedEvents[:0]
+		for _, event := range allEvents {
+			owner := fmt.Sprintf("owner #%d", event.ownerID)
+			if event.ownerID == s.Session.User.ID {
+				owner = "owner you"
+			}
+			searchable := strings.ToLower(strings.Join([]string{event.title, event.description, owner, eventStatusText(event), eventTypeText(event.eventType)}, " "))
+			if query == "" || strings.Contains(searchable, query) {
+				displayedEvents = append(displayedEvents, event)
+			}
+		}
+		eventFilterStatus.SetText(fmt.Sprintf("%d events", len(displayedEvents)))
+		eventList.Refresh()
+	}
+	eventSearch.OnChanged = func(string) { applyEventFilter() }
 
 	loadEvents := func() {
 		loadedEvents := make([]votingEventRow, 0)
@@ -542,7 +627,15 @@ func (s *AppState) votingView() fyne.CanvasObject {
 						return
 					}
 				} else if event.eventType == "Personal" {
-					event.inviteeIDs = []int64{s.Session.User.ID}
+					inviteeIDs, inviteeErr := eventInviteeIDs(event.id)
+					if inviteeErr != nil {
+						rows.Close()
+						eventFilterStatus.SetText(inviteeErr.Error())
+						return
+					}
+					if containsInvitee(inviteeIDs, s.Session.User.ID) {
+						event.inviteeIDs = []int64{s.Session.User.ID}
+					}
 				}
 				loadedEvents = append(loadedEvents, event)
 			}
@@ -557,9 +650,9 @@ func (s *AppState) votingView() fyne.CanvasObject {
 			}
 		}
 
-		displayedEvents = visibleVotingEvents(loadedEvents, s.Session.User.ID, admin)
-		eventFilterStatus.SetText(fmt.Sprintf("%d events", len(displayedEvents)))
-		eventList.Refresh()
+		allEvents = visibleVotingEvents(loadedEvents, s.Session.User.ID, admin)
+		sortVotingEvents(allEvents, time.Now())
+		applyEventFilter()
 		if selectedEventID != 0 {
 			for index, event := range displayedEvents {
 				if event.id == selectedEventID {
@@ -640,13 +733,6 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		if eventType.Selected != "Vote" && eventType.Selected != "Internal" && eventType.Selected != "External" && eventType.Selected != "Personal" {
 			eventStatus.SetText("Choose a valid event type")
 			return
-		}
-		if eventType.Selected == "Personal" {
-			count, _ := strconv.Atoi(inviteeCount.Selected)
-			if count < 1 || len(selectedInvitees) != count {
-				eventStatus.SetText("Choose an invitee count and select exactly that many Members")
-				return
-			}
 		}
 		if eventType.Selected == "Personal" {
 			count, _ := strconv.Atoi(inviteeCount.Selected)
@@ -762,12 +848,12 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		if selectedEvent == nil {
 			return
 		}
-		if !admin && (selectedEvent.eventType != "Personal" || selectedEvent.ownerID != s.Session.User.ID || !selectedEvent.isActive || selectedEvent.voteCount > 0 || eventIsActive(*selectedEvent, time.Now())) {
-			eventFilterStatus.SetText("Only your active, unopened Personal events without votes can be deleted")
+		if !admin && !eventOwnerMayDelete(*selectedEvent, s.Session.User.ID, time.Now()) {
+			eventFilterStatus.SetText("Owners can delete an event only after one day past its date")
 			return
 		}
 		deletingID := selectedEvent.id
-		dialog.ShowConfirm("Delete event", "Delete this event and its votes?", func(confirmed bool) {
+		dialog.ShowConfirm("Delete event", "Delete this event and its votes? This cannot be undone.", func(confirmed bool) {
 			if !confirmed {
 				return
 			}
@@ -904,15 +990,14 @@ func (s *AppState) votingView() fyne.CanvasObject {
 		eventFields,
 	)
 	eventEditor.Hide()
-	rightPanel = container.NewStack(prompt, votePanel, eventInfo, eventEditor)
+	rightPanel = container.NewStack(prompt, votePanel, eventInfo, previewCard, eventEditor)
 
 	if admin {
 		addButton.Importance = widget.HighImportance
 	}
-	eventActions := container.NewHBox(editButton, addButton, deleteButton, deactivateButton)
 	eventPane := container.NewBorder(
-		widget.NewLabelWithStyle("Events", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewVBox(eventActions, eventFilterStatus),
+		container.NewVBox(widget.NewLabelWithStyle("Events", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), eventSearch),
+		container.NewVBox(container.NewGridWithColumns(2, addButton, editButton, deleteButton, deactivateButton), eventFilterStatus),
 		nil,
 		nil,
 		eventList,
@@ -931,6 +1016,55 @@ func clockInRange(value, minimum, maximum string) bool {
 	min, minErr := time.Parse("15:04", minimum)
 	max, maxErr := time.Parse("15:04", maximum)
 	return minErr == nil && maxErr == nil && !parsed.Before(min) && !parsed.After(max)
+}
+
+func newChoiceBorder() *canvas.Rectangle {
+	border := canvas.NewRectangle(color.NRGBA{A: 0})
+	border.StrokeColor = color.NRGBA{R: 35, G: 35, B: 35, A: 255}
+	border.StrokeWidth = 2
+	border.Hide()
+	return border
+}
+
+func shortEventDescription(description string, limit int) string {
+	description = strings.Join(strings.Fields(description), " ")
+	runes := []rune(description)
+	if len(runes) <= limit {
+		return description
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func sortVotingEvents(events []votingEventRow, now time.Time) {
+	sort.SliceStable(events, func(i, j int) bool {
+		left, right := events[i], events[j]
+		leftGroup, rightGroup := eventSortGroup(left, now), eventSortGroup(right, now)
+		if leftGroup != rightGroup {
+			return leftGroup < rightGroup
+		}
+		if leftGroup == 2 {
+			return left.eventDate > right.eventDate
+		}
+		return left.opensAt > right.opensAt
+	})
+}
+
+func eventSortGroup(event votingEventRow, now time.Time) int {
+	if !event.isActive {
+		return 2
+	}
+	if eventIsActive(event, now) {
+		return 0
+	}
+	return 1
+}
+
+func eventOwnerMayDelete(event votingEventRow, userID int64, now time.Time) bool {
+	if event.ownerID != userID {
+		return false
+	}
+	eventDate, err := time.ParseInLocation("2006-01-02", event.eventDate, time.Local)
+	return err == nil && !now.Before(eventDate.AddDate(0, 0, 1))
 }
 
 func newTimeSpinner(initial string) (fyne.CanvasObject, func() string, func(string)) {
@@ -999,6 +1133,20 @@ func eventIsActive(event votingEventRow, now time.Time) bool {
 	opens, opensErr := time.ParseInLocation("2006-01-02 15:04", event.opensAt, time.Local)
 	closes, closesErr := time.ParseInLocation("2006-01-02 15:04", event.closesAt, time.Local)
 	return opensErr == nil && closesErr == nil && !now.Before(opens) && now.Before(closes)
+}
+
+func eventCanReceiveVotes(event votingEventRow) bool {
+	if !event.isActive {
+		return false
+	}
+	switch event.eventType {
+	case "Vote":
+		return true
+	case "Personal":
+		return len(event.inviteeIDs) > 0
+	default:
+		return false
+	}
 }
 
 func eventStatusText(event votingEventRow) string {

@@ -756,7 +756,20 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Updated", EventType: "Personal", InviteeIDs: []int64{otherMember.ID}, EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err != nil {
 		t.Fatalf("update own future Personal event: %v", err)
 	}
-	if _, err := db.DB().Exec(`INSERT INTO vote (voting_event_id, voter_user_id, choice) VALUES (?, ?, 'Yes')`, personal.ID, otherMember.ID); err != nil {
+	now := time.Now().In(time.Local)
+	if _, err := db.DB().Exec(`UPDATE voting_event SET opens_at = ?, closes_at = ? WHERE id = ?`, now.Add(-time.Minute).Format("2006-01-02 15:04"), now.Add(time.Hour).Format("2006-01-02 15:04"), personal.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SaveVote(personal.ID, api.Vote{Choice: "Yes"}); err == nil {
+		t.Fatal("Personal-event owner voted without being an invitee")
+	}
+	if _, _, err := client.Login(otherMember.Email, "other-test-password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SaveVote(personal.ID, api.Vote{Choice: "Yes"}); err != nil {
+		t.Fatalf("invited Member could not vote in Personal event: %v", err)
+	}
+	if _, _, err := client.Login(member.Email, "member-test-password"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.SaveEvent(api.Event{ID: personal.ID, Title: "Locked", EventType: "Personal", InviteeIDs: []int64{otherMember.ID}, EventDate: "2099-01-02", OpensAt: "2099-01-01 09:00", ClosesAt: "2099-01-01 10:00"}); err == nil {
@@ -771,7 +784,10 @@ func TestPersonalEventPermissionsAndVoteSummary(t *testing.T) {
 	if err := client.DeleteEvent(personal.ID); err == nil {
 		t.Fatal("non-admin deleted a deactivated event")
 	}
-	deletable, err := client.SaveEvent(newEvent("Deletable"))
+	deletable, err := client.SaveEvent(api.Event{
+		Title: "Deletable", EventType: "Personal", EventClass: "Private", InviteeIDs: []int64{otherMember.ID},
+		EventDate: "2000-01-02", OpensAt: "2000-01-01 09:00", ClosesAt: "2000-01-01 10:00",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
